@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frame_optimizer"
+version = "0.1.0"
+description = "Gravity-load optimizer for fully pinned steel frames: Pynite FEA + AISC 360 LRFD checks over W-shape candidates"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "PyniteFEA>=1.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+viz = ["plotly"]   # only needed for the modeler/ wireframe viewer
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"frame_optimizer.sections" = ["data/*.csv"]
