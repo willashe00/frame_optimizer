@@ -44,8 +44,6 @@ config = ClearSpanConfig(
         "W10X33", "W10X39", "W12X40", "W12X53", "W14X61",
     ],
     end_girder_candidates=[
-        # giving the end girders their own (lighter) group lets the layout
-        # search consider gable columns on the two end walls
         "W12X16", "W14X22", "W16X26", "W18X35", "W21X44",
     ],
 
