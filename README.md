@@ -2,14 +2,10 @@
 
 Gravity-load optimizer for fully pinned steel frames (AISC W-shapes).
 Pipeline: [Pynite](https://github.com/JWock82/Pynite) 3-D FEA → AISC 360 LRFD
-checks → lightest-section search over user-supplied candidates.
+checks → lightest-section search over candidate section combinations.
 
 Primary entry point: **[gravity_design.py](gravity_design.py)** — clear-span
-industrial building (equipment enclosure, no interior columns).
-[main.py](main.py) runs the alternative conventional column grid
-(`FrameConfig`); same pipeline, not covered further here.
-
-Full engineering derivation: [METHODOLOGY.md](METHODOLOGY.md).
+industrial building (equipment enclosure, no interior columns)..
 
 ## Quick start
 
@@ -23,12 +19,24 @@ All inputs live in the `ClearSpanConfig` block of `gravity_design.py`.
 No CLI args. Interface units: feet and psf. Internal units: kips, inches, ksi.
 Metric plan dimensions via `M_TO_FT`.
 
+The only geometric inputs are the building **footprint**: `span_ft`,
+`length_ft`, `eave_height_ft`. The layout — `n_frames`, `purlin_spacing_ft`,
+`end_wall_columns` — is **derived**, not user-specified: `optimize_layout()`
+searches the realistic layout band for the footprint (bays ~20–30 ft, purlins
+~4–6 ft, end-girder segments ≤ ~25 ft) and keeps the lightest feasible design.
+A footprint no longer than one bay collapses to a minimal 1×1-bay enclosure
+(2 frames, no gable columns). Footprint orientation is self-correcting: if
+`span_ft > length_ft` the two are swapped, so girders always clear-span the
+shorter plan dimension (girder demand grows with span², so spanning the long
+way is never lighter).
+
 ## What gravity_design.py does
 
-1. Defines a `ClearSpanConfig`: 20 m × 30 m plan, 5 transverse frames,
-   9.14 m (30 ft) eave, candidate W-shapes per design group, roof loads.
-2. Calls `optimize(config)` — returns an `OptimizationResult`.
-3. Emits (to the repo root):
+1. Defines a `ClearSpanConfig`: 20 m × 30 m plan footprint, 9.14 m (30 ft)
+   eave, candidate W-shapes per design group, roof loads.
+2. Calls `optimize_layout(config)` — derives the layout from the footprint
+   and returns the lightest feasible `OptimizationResult`.
+3. Emits (to the git-ignored `output/` directory):
 
 | Output | Content | Consumer |
 |---|---|---|
@@ -46,8 +54,10 @@ Metric plan dimensions via `M_TO_FT`.
   perimeter columns + one clear-span roof girder. Interior stays empty.
 - Purlins run in Z between girders, spaced along the span. Eave lines carry
   half tributary width.
-- Optional gable columns on the two end walls only. They support the end
-  girders, which then form their own lighter design group.
+- Optional gable columns on the two end walls only (count chosen by the
+  layout search). They support the end girders, which then form their own
+  lighter design group — providing `end_girder_candidates` is what enables
+  this option.
 - One-way load path: deck → purlins → girders → perimeter columns.
 
 Design groups (one shared section per group; heaviest-loaded member governs):
@@ -61,7 +71,13 @@ Design groups (one shared section per group; heaviest-loaded member governs):
 
 ## Pipeline
 
-`optimize(config)` in [optimizer.py](src/frame_optimizer/optimization/optimizer.py):
+`optimize_layout(config)` in
+[optimizer.py](src/frame_optimizer/optimization/optimizer.py) is the
+clear-span entry point: it enumerates every realistic layout for the
+footprint (`candidate_layouts()` in `clear_span.py`), runs `optimize()` on
+each, and returns the lightest feasible design (weight ties break toward
+fewer members). Layout fields set explicitly on the config are pinned and
+excluded from the search. Per layout, `optimize(config)`:
 
 1. **Geometry** — [clear_span.py](src/frame_optimizer/clear_span.py)
    `build_clear_span_geometry()`: nodes + members tagged with group and
@@ -157,13 +173,13 @@ from their exact definitions. Regenerate with
 gravity_design.py                entry point: clear-span building (this README)
 main.py                          entry point: conventional grid frame
 src/frame_optimizer/
-├── clear_span.py                ClearSpanConfig, validation, geometry builder, group rules
+├── clear_span.py                ClearSpanConfig, layout derivation, geometry builder, group rules
 ├── config.py                    FrameConfig + shared constants (FT, M_TO_FT, group names)
 ├── geometry.py                  NodeInfo/MemberInfo/FrameGeometry dataclasses; grid builder
 ├── analysis/frame_model.py      Pynite model build, combos, MemberDemand extraction
 ├── design/aisc_strengths.py     AISC 360 capacity equations (pure functions)
 ├── design/checker.py            check_member(), GroupRules, CheckParams
-├── optimization/optimizer.py    iterative + exhaustive search, config dispatch
+├── optimization/optimizer.py    layout search + iterative/exhaustive section search
 ├── export.py                    baseplate + building-configuration JSON writers
 ├── results.py                   OptimizationResult + summary()
 └── sections/                    W-shape catalog: CSV + WShape loader

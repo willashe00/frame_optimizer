@@ -18,6 +18,10 @@ class OptimizationResult:
     iterations: list[dict] = field(default_factory=list)
     config: object | None = None      # FrameConfig | ClearSpanConfig (any config
                                       # with candidates_by_group and describe())
+    layout_search: list[dict] = field(default_factory=list)
+                                      # optimize_layout() only: one entry per
+                                      # candidate layout tried (this result is
+                                      # the winner)
 
     def summary(self) -> str:
         lines = ["=" * 62, "frame_optimizer - gravity frame optimization result", "=" * 62]
@@ -29,6 +33,12 @@ class OptimizationResult:
 
         if self.config is not None:
             lines.extend(self.config.describe())
+        if self.layout_search:
+            n_feasible = sum(1 for r in self.layout_search if r["feasible"])
+            lines.append(
+                f"Layout: lightest of {n_feasible} feasible / "
+                f"{len(self.layout_search)} realistic layout(s) searched "
+                "for the footprint")
 
         lines.append("-" * 62)
         lines.append("Selected sections:")

@@ -22,6 +22,7 @@ provided for validation on small candidate lists.
 from __future__ import annotations
 
 import itertools
+from dataclasses import replace
 
 import pandas as pd
 
@@ -29,7 +30,7 @@ from typing import Callable, Union
 
 from ..analysis import MemberDemand, analyze_frame
 from ..clear_span import (ClearSpanConfig, build_clear_span_geometry,
-                          clear_span_check_params)
+                          candidate_layouts, clear_span_check_params)
 from ..config import FT, FrameConfig
 from ..design import CheckParams, check_all, check_member
 from ..geometry import FrameGeometry, build_geometry
@@ -243,6 +244,66 @@ def optimize(config: AnyConfig, method: str = "iterative",
         return _optimize_exhaustive(config, geometry, candidates, params,
                                     analyze, verbose)
     raise ValueError("method must be 'iterative' or 'exhaustive'.")
+
+
+def optimize_layout(config: ClearSpanConfig, method: str = "iterative",
+                    max_iterations: int = 10,
+                    verbose: bool = False) -> OptimizationResult:
+    """Clear-span layout search: determine the building layout (n_frames,
+    purlin_spacing_ft, end_wall_columns) from the footprint by optimizing
+    every realistic layout and keeping the lightest feasible design.
+
+    The footprint (span_ft, length_ft, eave_height_ft) is the fixed input.
+    Layout fields left to auto-derive on the config are the search variables,
+    ranging over the practice bands in clear_span.py; any field set
+    explicitly is honored as-is. The winning result's .config carries the
+    chosen layout and .layout_search records every layout tried. If no
+    layout yields a feasible design, the attempt that came closest (smallest
+    worst unity check) is returned with feasible=False."""
+    if not isinstance(config, ClearSpanConfig):
+        raise TypeError(
+            "optimize_layout() searches clear-span building layouts; a "
+            "conventional grid frame (FrameConfig) has its layout given "
+            "explicitly — use optimize() for it."
+        )
+
+    best = best_key = None
+    fallback = fallback_uc = None
+    search: list[dict] = []
+    for n_frames, spacing, gables in candidate_layouts(config):
+        variant = replace(config, n_frames=n_frames,
+                          purlin_spacing_ft=spacing, end_wall_columns=gables)
+        result = optimize(variant, method=method,
+                          max_iterations=max_iterations, verbose=False)
+        worst_uc = float(result.member_table["governing_uc"].max())
+        search.append({
+            "n_frames": n_frames,
+            "frame_spacing_ft": variant.frame_spacing_ft,
+            "purlin_spacing_ft": variant.purlin_spacing_actual_ft,
+            "end_wall_columns": gables,
+            "feasible": result.feasible,
+            "total_weight_lb": result.total_weight_lb,
+            "worst_uc": worst_uc,
+        })
+        if verbose:
+            outcome = (f"{result.total_weight_lb:,.0f} lb" if result.feasible
+                       else f"infeasible (worst UC {worst_uc:.2f})")
+            print(f"[layout] {n_frames} frames @ {variant.frame_spacing_ft:.1f} ft, "
+                  f"purlins @ {variant.purlin_spacing_actual_ft:.2f} ft, "
+                  f"{gables} gable col(s)/end -> {outcome}")
+
+        if result.feasible:
+            # lightest wins; weights within a pound are a practical tie,
+            # broken toward fewer members (less fabrication and erection)
+            key = (round(result.total_weight_lb), len(result.member_table))
+            if best is None or key < best_key:
+                best, best_key = result, key
+        elif fallback is None or worst_uc < fallback_uc:
+            fallback, fallback_uc = result, worst_uc
+
+    chosen = best if best is not None else fallback
+    chosen.layout_search = search
+    return chosen
 
 
 def evaluate(config: AnyConfig, sections: dict[str, str]) -> OptimizationResult:

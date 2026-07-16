@@ -10,7 +10,7 @@ from .clear_span import ClearSpanConfig
 from .config import M_TO_FT, FrameConfig
 from .export import (baseplate_inputs, building_configuration,
                      write_baseplate_json, write_building_json)
-from .optimization import evaluate, geometry_for, optimize
+from .optimization import evaluate, geometry_for, optimize, optimize_layout
 from .results import OptimizationResult
 from .sections import WShape, get_shapes, load_w_shapes
 
@@ -27,6 +27,7 @@ __all__ = [
     "get_shapes",
     "load_w_shapes",
     "optimize",
+    "optimize_layout",
     "write_baseplate_json",
     "write_building_json",
 ]

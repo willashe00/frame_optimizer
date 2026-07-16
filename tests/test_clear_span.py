@@ -5,13 +5,19 @@ beam statics (wL^2/8, wL/2, 5wL^4/384EI) through the FEA, girders must match
 the discrete-point-load statics, and the factored base reactions must equal
 the total factored gravity load exactly.
 """
+from dataclasses import replace
+
 import pytest
 
-from frame_optimizer import ClearSpanConfig, evaluate, optimize
+from frame_optimizer import ClearSpanConfig, evaluate, optimize, optimize_layout
 from frame_optimizer.analysis import analyze_frame
 from frame_optimizer.clear_span import (END_GIRDER, GIRDER, PURLIN,
                                         build_clear_span_geometry,
-                                        clear_span_check_params)
+                                        candidate_layouts,
+                                        clear_span_check_params,
+                                        derive_end_wall_columns,
+                                        derive_n_frames,
+                                        derive_purlin_spacing_ft)
 from frame_optimizer.config import COLUMN, FT
 from frame_optimizer.sections import get_shapes
 
@@ -37,6 +43,20 @@ def cfg(**kw):
 def gable_cfg(**kw):
     return cfg(end_wall_columns=2,
                end_girder_candidates=["W12X16", "W16X26", "W21X44"], **kw)
+
+
+def auto_cfg(**kw):
+    """Footprint-only config: the layout is derived, not given."""
+    base = dict(
+        girder_candidates=["W24X76", "W30X108", "W33X130"],
+        purlin_candidates=["W8X10", "W12X16"],
+        column_candidates=["W10X33", "W12X53"],
+        span_ft=50.0, length_ft=60.0, eave_height_ft=20.0,
+        superimposed_dead_psf=15.0, live_psf=25.0,
+        purlin_Lb_ft=0.0,
+    )
+    base.update(kw)
+    return ClearSpanConfig(**base)
 
 
 def analyzed(config, girder="W30X108", purlin="W8X10", column="W10X33",
@@ -121,6 +141,93 @@ def test_config_validation():
         cfg(end_wall_columns=2)       # needs end_girder_candidates
     with pytest.raises(ValueError):
         cfg(girder_camber_in=-1.0)
+
+
+# ---------------------------------------- layout derived from the footprint
+
+def test_layout_rules_track_practice_bands():
+    # bays as close to 25 ft as the length allows, never above 30 ft
+    assert derive_n_frames(98.4) == 5      # 4 bays @ 24.6 ft
+    assert derive_n_frames(60.0) == 3      # 2 bays @ 30.0 ft
+    assert derive_n_frames(62.5) == 4      # extra bay keeps spacing <= 30 ft
+    assert derive_n_frames(25.0) == 2      # single bay
+    assert derive_n_frames(12.0) == 2      # tiny building: still a 1x1 bay
+    # purlins at 5 ft unless the two-space minimum forces less
+    assert derive_purlin_spacing_ft(50.0) == 5.0
+    assert derive_purlin_spacing_ft(8.0) == 4.0
+    # gable columns keep end-girder segments <= 25 ft, and require the group
+    assert derive_end_wall_columns(65.6, True) == 2
+    assert derive_end_wall_columns(20.0, True) == 0
+    assert derive_end_wall_columns(65.6, False) == 0
+
+
+def test_auto_layout_fields_derived_and_tracked():
+    config = auto_cfg()
+    assert config.auto_layout_fields == frozenset(
+        {"n_frames", "purlin_spacing_ft", "end_wall_columns"})
+    assert config.n_frames == 3            # 60 ft -> 2 bays @ 30 ft
+    assert config.purlin_spacing_ft == 5.0
+    assert config.end_wall_columns == 0    # no end-girder group given
+    # explicit values are honored, marked pinned, and not searched over
+    assert cfg().auto_layout_fields == frozenset({"end_wall_columns"})
+    pinned = gable_cfg()
+    assert pinned.auto_layout_fields == frozenset()
+    assert candidate_layouts(pinned) == [(3, 5.0, 2)]
+
+
+def test_footprint_orientation_normalized():
+    # girders must clear-span the shorter plan dimension; a span > length
+    # input is auto-swapped and produces the identical building
+    swapped = auto_cfg(span_ft=60.0, length_ft=50.0)
+    right = auto_cfg()   # same footprint, correctly oriented (50 x 60)
+    assert (swapped.span_ft, swapped.length_ft) == (50.0, 60.0)
+    assert swapped.n_frames == right.n_frames
+    assert swapped.purlin_spacing_ft == right.purlin_spacing_ft
+    assert any("swapped" in line for line in swapped.describe())
+    assert not any("swapped" in line for line in right.describe())
+
+
+def test_small_footprint_collapses_to_single_bay():
+    config = auto_cfg(span_ft=20.0, length_ft=24.0, eave_height_ft=16.0)
+    assert (config.n_frames, config.end_wall_columns) == (2, 0)
+    geo = build_clear_span_geometry(config)
+    assert len(geo.members_in_group(GIRDER)) == 2
+    assert len(geo.members_in_group(COLUMN)) == 4   # 1x1 bay: corner columns only
+
+
+def test_candidate_layouts_stay_realistic_and_valid():
+    config = auto_cfg(end_girder_candidates=["W12X16", "W16X26", "W21X44"])
+    layouts = candidate_layouts(config)
+    assert len(layouts) == len(set(layouts)) > 1
+    for n_frames, spacing, gables in layouts:
+        assert 20.0 <= config.length_ft / (n_frames - 1) <= 30.0
+        assert 4.0 <= spacing <= 6.0
+        assert gables in (0, 1, 2)   # span 50: up to 2 keeps segments >= ~15 ft
+        # every candidate layout must construct as a valid config
+        replace(config, n_frames=n_frames, purlin_spacing_ft=spacing,
+                end_wall_columns=gables)
+    assert {g for _, _, g in layouts} == {0, 1, 2}
+
+
+def test_optimize_layout_picks_lightest_feasible():
+    config = auto_cfg(span_ft=30.0, length_ft=45.0)
+    result = optimize_layout(config)
+    assert result.feasible
+    feasible = [r for r in result.layout_search if r["feasible"]]
+    assert feasible
+    assert result.total_weight_lb == pytest.approx(
+        min(r["total_weight_lb"] for r in feasible))
+    # the chosen layout is baked into the returned config, now fully concrete
+    assert result.config.n_frames == 3               # 45 ft -> 2 bays
+    assert result.config.auto_layout_fields == frozenset()
+    assert "Layout:" in result.summary()
+
+
+def test_optimize_layout_honors_pinned_fields():
+    config = auto_cfg(span_ft=30.0, length_ft=45.0, purlin_spacing_ft=5.0)
+    assert all(sp == 5.0 for _, sp, _ in candidate_layouts(config))
+    with pytest.raises(TypeError):
+        optimize_layout("not a clear-span config")
 
 
 def test_check_params_rules_per_group():
