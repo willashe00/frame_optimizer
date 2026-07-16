@@ -20,8 +20,7 @@ No CLI args. Interface units: feet and psf. Internal units: kips, inches, ksi.
 Metric plan dimensions via `M_TO_FT`.
 
 The only geometric inputs are the building **footprint**: `span_ft`,
-`length_ft`, `eave_height_ft`. The layout — `n_frames`, `purlin_spacing_ft`,
-`end_wall_columns` — is **derived**, not user-specified: `optimize_layout()`
+`length_ft`, `eave_height_ft`. The frame layout is **derived**, not user-specified: `optimize_layout()`
 searches the realistic layout band for the footprint (bays ~20–30 ft, purlins
 ~4–6 ft, end-girder segments ≤ ~25 ft) and keeps the lightest feasible design.
 A footprint no longer than one bay collapses to a minimal 1×1-bay enclosure
