@@ -56,6 +56,15 @@ class GroupRules:
       never reduces the checked total below the live-load deflection, so
       over-declared camber cannot hide a live-load problem. Specify no more
       than the dead-load deflection (typically ~75%% of it).
+    * ``KLx_in`` / ``KLy_in`` — compression effective lengths about the
+      section's major/minor axis; ``None`` (the default) uses the full member
+      length. Needed for continuous truss chords modeled as one physical
+      member over the whole span: their real buckling lengths are one panel
+      in plane (KLx, web members restrain the chord at every panel point) and
+      the lateral brace spacing out of plane (KLy — purlins for the top
+      chord, bridging for the bottom chord). K = 1 on those segment lengths
+      is conservative for a continuous chord. The slenderness check, when
+      enabled, uses the same effective lengths.
     """
     Lb_in: float | None = None
     check_deflection: bool = True
@@ -64,6 +73,8 @@ class GroupRules:
     check_slenderness: bool = False
     Cb_simple_span: bool = False
     camber_in: float = 0.0
+    KLx_in: float | None = None
+    KLy_in: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,13 +139,26 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
     rules = params.rules_for(demand.group)
     L = demand.length_in
     Lb = _unbraced_length(demand, rules)
+    KLx = L if rules.KLx_in is None else rules.KLx_in
+    KLy = L if rules.KLy_in is None else rules.KLy_in
 
-    # axial capacity consistent with the force sign (K = 1, pin-pin)
-    if demand.Pu < 0.0:
-        phi_Pn, ax_clause = st.compression_capacity(shape, Fy, E, KLx=L, KLy=L)
-    else:
-        phi_Pn, ax_clause = st.tension_capacity(shape, Fy)
-    uc_axial = abs(demand.Pu) / max(phi_Pn, 1e-12)
+    # Axial: check BOTH signed extremes (K = 1 per DAM for rigid bents,
+    # pin-pin for the pinned frame). A member whose axial force reverses
+    # along its length or across combos — e.g. a rigid-bent bottom chord,
+    # tension at midspan but compression near the frame corners — must pass
+    # tension yielding AND flexural buckling, each against its own extreme.
+    pu_c = demand.Pu_compression        # <= 0
+    pu_t = demand.Pu_tension            # >= 0
+    sides: list[tuple[float, float, str]] = []   # (Pu_signed, phi_Pn, clause)
+    if pu_c < 0.0:
+        cap, clause = st.compression_capacity(shape, Fy, E, KLx=KLx, KLy=KLy)
+        sides.append((pu_c, cap, clause))
+    if pu_t > 0.0 or not sides:
+        cap, clause = st.tension_capacity(shape, Fy)
+        sides.append((pu_t, cap, clause))
+    _, phi_Pn, ax_clause = max(
+        sides, key=lambda s: abs(s[0]) / max(s[1], 1e-12))
+    uc_axial = max(abs(p) / max(cap, 1e-12) for p, cap, _ in sides)
 
     Cb = CB_SIMPLE_SPAN if (rules.Cb_simple_span and Lb >= L) else 1.0
     phi_Mnx, mx_clause = st.flexure_major_capacity(shape, Fy, E, Lb=Lb, Cb=Cb)
@@ -146,8 +170,12 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
     phi_Vn, v_clause = st.shear_capacity(shape, Fy, E)
     uc_v = demand.Vu / max(phi_Vn, 1e-12)
 
-    uc_h1, h1_clause = st.interaction_h1(demand.Pu, demand.Mux, demand.Muy,
-                                         phi_Pn, phi_Mnx, phi_Mny)
+    # H1 for every axial pairing, each paired (conservatively) with the full
+    # moment envelope; the worst governs
+    uc_h1, h1_clause = max(
+        (st.interaction_h1(p, demand.Mux, demand.Muy, cap, phi_Mnx, phi_Mny)
+         for p, cap, _ in sides),
+        key=lambda r: r[0])
 
     ucs = {
         "UC_axial": uc_axial,
@@ -158,9 +186,10 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
     }
 
     # KL/r <= 200 (E2 user note) - a proportioning rule for members that
-    # actually resist compression, enabled per group (columns).
+    # actually resist compression, enabled per group (columns). Uses the same
+    # per-axis effective lengths as the strength check.
     if rules.check_slenderness:
-        ucs["UC_slenderness"] = (L / min(shape.rx, shape.ry)) / 200.0
+        ucs["UC_slenderness"] = max(KLx / shape.rx, KLy / shape.ry) / 200.0
 
     if rules.check_deflection:
         scale = demand.Ix_used / shape.Ix

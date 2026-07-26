@@ -20,6 +20,16 @@ PLF_TO_KIP_PER_IN = 1.0 / (1000.0 * 12.0)
 COLUMN = "column"
 BEAM = "beam"
 
+# Clear-span girder-system identifiers (defined here, not in clear_span, so
+# the analysis layer can branch on them without a circular import). AUTO
+# prefers rolled W girders and falls back to truss girders when no candidate
+# W-shape can carry the clear span. The girder system also sets the frame
+# behavior: W girders -> fully pinned gravity frame; trusses -> rigid
+# transverse bents analyzed per the AISC Direct Analysis Method.
+AUTO = "auto"
+WIDE_FLANGE = "wide_flange"
+TRUSS = "truss"
+
 
 @dataclass
 class FrameConfig:

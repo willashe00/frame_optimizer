@@ -11,6 +11,11 @@ determined by optimize_layout(): it searches the realistic layout band for the
 footprint (bays ~20-30 ft, purlins ~4-6 ft, end-girder segments <= ~25 ft) and
 keeps the lightest feasible design. A footprint no longer than one bay
 naturally collapses to a minimal 1x1-bay enclosure (2 frames, no gables).
+
+The girder system is chosen automatically too: rolled W girders whenever any
+candidate W-shape can carry the clear span, parallel-chord Pratt truss girders
+(built from the truss chord/web candidates below) when none can — which is
+what happens for clear spans beyond roughly 90-100 ft.
 """
 from pathlib import Path
 
@@ -41,7 +46,11 @@ config = ClearSpanConfig(
         "W8X10", "W10X12", "W12X14", "W12X16", "W14X22",
     ],
     column_candidates=[
+        # the heavier W12/W14 sizes serve the truss option: rigid-bent
+        # columns run full height to the top chord (eave + truss depth) and
+        # carry frame-action moments, so KL/r and H1 demand stockier shapes
         "W10X33", "W10X39", "W12X40", "W12X53", "W14X61",
+        "W12X65", "W14X90", "W14X109",
     ],
     end_girder_candidates=[
         "W12X16", "W14X22", "W16X26", "W18X35", "W21X44",
@@ -49,9 +58,18 @@ config = ClearSpanConfig(
 
 
     # ------- building footprint (configure these ONLY) -------
-    span_ft=25.0 * M_TO_FT,      # clear span: girder direction
-    length_ft=35.0 * M_TO_FT,    # building length
-    eave_height_ft=30.0,         # clearance over the equipment
+    span_ft=40.0 * M_TO_FT,      # clear span: girder direction
+    length_ft=50.0 * M_TO_FT,    # building length
+    eave_height_ft=55.0,         # clearance over the equipment
+
+
+    # ------- truss-girder fallback candidates (chords + webs) -------
+    truss_chord_candidates=[
+        "W10X33", "W12X40", "W12X53", "W14X61", "W14X82", "W14X109",
+    ],
+    truss_web_candidates=[
+        "W8X10", "W8X24", "W10X33", "W12X40",
+    ],
 
 
     # ------- Other inputs (defaults) -------

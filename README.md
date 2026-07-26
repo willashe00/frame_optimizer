@@ -68,6 +68,64 @@ Design groups (one shared section per group; heaviest-loaded member governs):
 | `end_girder` | the two end-wall girders | own candidates; lighter when gable columns exist |
 | `purlin` | roof purlins | `purlin_Lb_ft=0` = deck-braced top flange |
 
+### Truss girders (automatic fallback, or `girder_system="truss"`)
+
+Rolled W girders top out around a 90–100 ft clear span — deflection demands
+Ix that grows with span⁴, and even a W44 falls far short at 170 ft. With
+`girder_system="auto"` (the default) the choice is automatic: supply
+`truss_chord_candidates` + `truss_web_candidates` alongside the girder list,
+and `optimize_layout()` uses rolled W girders whenever **any** W layout is
+feasible, escalating to trusses **only when none is** — a closed-form screen
+(`wide_flange_infeasible_reason`) proves certain infeasibility from the
+candidate list's best Ix/Zx and skips the futile W search on long spans. The
+decision is recorded in `result.system_search` and printed in the summary.
+Pin `girder_system` to `"wide_flange"` or `"truss"` to force either system.
+
+**The girder system also sets the frame behavior.** Wide-flange girders keep
+the fully pinned gravity frame with the long-standing checks. Truss girders
+make every frame a **rigid transverse bent**: columns run full height to the
+top-chord level and the truss ties into each column at *both* chord
+elevations (bottom chord at the eave, top chord at the column top) — each
+tie is a pin, but the pair, one truss depth apart, forms the moment
+connection (the classic mill-bent detail). The bent then provides its own
+in-plane stability, so strength design follows the **AISC 360 Chapter C
+Direct Analysis Method**: 0.8-reduced stiffness, notional lateral loads
+0.003·Yi per gravity case (0.002 per C2.2b + 0.001 per C2.3(c) in lieu of
+τb), second-order P-Δ analysis, and K = 1 member checks. Serviceability
+uses a parallel nominal-stiffness model. Frame action puts real bending and
+shear in the columns (checked as beam-columns under H1), produces real
+gravity thrust at the bases (exported for anchorage design), and reverses
+the chord forces near the frame corners — the checker verifies **both**
+signed axial extremes of every member (tension yielding *and* flexural
+buckling), which the single-envelope check of a pinned frame never needed.
+
+In truss mode every frame carries a parallel-chord **Pratt truss** (the
+custom-fabricated analog of SJI DLH/SLH long-span joists, with W-shape
+chords and webs as is customary for heavy long-span roof trusses). The
+bottom chord ties in at the eave, so `eave_height_ft` stays the true
+clear height; the depth rises above the eave and the purlins ride the top
+chord. An auto-derived depth joins the layout search over the practice band
+span/10–span/15 (panels even-count near 45° diagonals re-derive per depth).
+Both chords are full-span physical members — purlin lines that miss a panel
+point load the continuous top chord in local bending, captured directly —
+and the chord sag *is* the checked truss deflection (camber credit applies).
+Chord compression uses segment effective lengths: one panel in plane, the
+brace spacing out of plane (purlins on top; bottom-chord bridging, assumed
+at every panel point per `truss_bottom_brace_ft`, required in practice and
+load-free so not modeled). In truss mode `girder_candidates` is ignored;
+the groups become:
+
+| Group | Members | Notes |
+|---|---|---|
+| `truss_top_chord` | top chords (full span) | compression + local bending; KLx = panel, KLy/Lb = purlin spacing |
+| `truss_bot_chord` | bottom chords (full span) | tension; braced by bridging (`truss_bottom_brace_ft`) |
+| `truss_web` | verticals + diagonals | pin-ended axial members, checked at full length |
+
+v1 scope: end frames carry the same trusses at half tributary width; gable
+columns / `end_girder` are not available with trusses. Chord/web candidates
+are W-shapes (WT/HSS/double-angle families need AISC F9/F7 clauses — future
+work).
+
 ## Pipeline
 
 `optimize_layout(config)` in
@@ -76,7 +134,21 @@ clear-span entry point: it enumerates every realistic layout for the
 footprint (`candidate_layouts()` in `clear_span.py`), runs `optimize()` on
 each, and returns the lightest feasible design (weight ties break toward
 fewer members). Layout fields set explicitly on the config are pinned and
-excluded from the search. Per layout, `optimize(config)`:
+excluded from the search.
+
+Performance: pin-ended purlins are statically determinate, so the transverse
+frames are exactly decoupled — each layout analyzes a **3-frame
+representative strip** and broadcasts demands to the full member list
+(member-for-member identical to the full building to ~1e-5, the residual
+being the purlin torsional stiffness retained against spin mechanisms;
+tested). Independent layouts evaluate on a **process pool** (`parallel=None`
+auto-enables it for big searches; scripts need the standard
+`if __name__ == "__main__":` guard, as `gravity_design.py` has). An
+oscillating section search ratchets monotonically upward instead of bouncing
+to the iteration cap. Net effect: the full 27-layout truss sweep of a
+195×170 ft building — DAM P-Δ analysis included — runs in ~3 minutes.
+
+Per layout, `optimize(config)`:
 
 1. **Geometry** — [clear_span.py](src/frame_optimizer/clear_span.py)
    `build_clear_span_geometry()`: nodes + members tagged with group and
@@ -119,8 +191,10 @@ column landing on a base (includes gable columns). Per column:
 
 Reactions come from one extra linear solve of the final assignment; vertical
 base reaction = column axial. Compression-positive. Base condition: pinned.
-No lateral shear — out of model scope. Column web orientation not defined by
-the gravity model.
+`base_shear_x_kip` carries the gravity thrust of rigid truss bents
+(essentially zero for the pinned wide-flange system); wind/seismic base
+shear remains out of model scope, and DAM notional loads are excluded from
+exported reactions. Column web orientation not defined by the gravity model.
 
 **`building_configuration.json`** — `write_building_json(result)`:
 
@@ -134,17 +208,36 @@ the gravity model.
 
 ## Engineering assumptions (must-read)
 
-- **Gravity only. Fully pinned.** The frame is a lateral mechanism; nodes are
-  restrained in DX/DZ/rotations purely to remove mechanism DOFs. Valid only
-  because those restraints attract no force under gravity. **Never add
-  lateral loads to this model.** Wind/seismic need a separate system —
-  a tall single-story shell is usually wind-governed.
+- **Gravity only.** Wind/seismic are never applied and need a building-level
+  lateral design — a tall single-story shell is usually wind-governed. The
+  frame behavior depends on the girder system:
+  - **Wide-flange girders: fully pinned.** The frame is a lateral mechanism;
+    nodes are restrained in DX/DZ/rotations purely to remove mechanism DOFs.
+    Valid only because those restraints attract no force under gravity.
+    **Never add lateral loads to this model.**
+  - **Truss girders: rigid transverse bents.** Each bent is self-stable in
+    its plane (frame-plane DX restraints are released), analyzed per the
+    AISC Direct Analysis Method: 0.8EI/0.8EA, notional loads 0.003·Yi (the
+    only "lateral" loads ever present — fictitious stability devices, kept
+    out of exported reactions), P-Δ second order, K = 1 checks. Gravity
+    thrust at the bases is real and exported. Out-of-plane (DZ) restraints
+    remain mechanism devices exactly as in the pinned scheme.
 - Purlins are explicit pin-ended members; they deliver true point reactions
   to the girders at shared nodes. Girders are Pynite physical members:
   subdivided at purlin nodes, checked over the full span, self-weight only
   as direct load. Purlin nodes get free rotations (the continuous girder
   stabilizes them) — clamping them would falsify girder bending.
   Statics close exactly (tested to 0.1%).
+- Truss mode: every non-base node of a bent keeps its X translation
+  (`NodeInfo.free_dx`) — unlike a beam node, a truss-frame node must
+  equilibrate the diagonals' horizontal components through the chords, and
+  the bent's own frame action supplies the in-plane stiffness the blanket DX
+  mechanism restraint would otherwise fake. Columns are continuous physical
+  members through the eave node (both chord ties are pins; the pair is the
+  moment connection). Chord tension/compression reproduces M/d, sag
+  reproduces 5wL⁴/384EI_truss + web strain, thrust reactions
+  self-equilibrate, and the bottom chord's end-compression reversal is
+  checked (all tested).
 - Columns: pin–pin, K = 1.0, L = eave height.
 - `live_psf` = governing of ASCE 7 roof live (Lr) and snow.
 - Girder Lb defaults to actual purlin spacing (purlins brace the compression

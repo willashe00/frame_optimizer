@@ -31,12 +31,18 @@ from frame_optimizer.results import OptimizationResult
 # Categorical slots 1-4 of the reference palette in fixed order (validated as
 # a set; aqua's and yellow's lower surface contrast is relieved by the direct
 # section labels on every member). 'girder' takes slot 2 because it plays the
-# same primary-flexural role as 'beam' and the two never appear in one figure.
-# Groups without an entry fall back to the muted neutral until they get a slot.
+# same primary-flexural role as 'beam' and the two never appear in one figure;
+# the truss chords reuse the girder greens for the same reason (truss and
+# W-girder groups are mutually exclusive with beam/girder/end_girder), and the
+# webs take the aqua slot. Groups without an entry fall back to the muted
+# neutral until they get a slot.
 _GROUP_COLOR = {COLUMN: "#2a78d6", BEAM: "#1baf7a",
                 "girder": "#1baf7a", "purlin": "#eda100",
-                "end_girder": "#008300"}
-_GROUP_WIDTH = {COLUMN: 6, BEAM: 4, "girder": 5, "purlin": 3, "end_girder": 5}
+                "end_girder": "#008300",
+                "truss_top_chord": "#1baf7a", "truss_bot_chord": "#008300",
+                "truss_web": "#00a2c7"}
+_GROUP_WIDTH = {COLUMN: 6, BEAM: 4, "girder": 5, "purlin": 3, "end_girder": 5,
+                "truss_top_chord": 5, "truss_bot_chord": 5, "truss_web": 2}
 _DEFAULT_WIDTH = 4
 
 _SURFACE = "#fcfcfb"

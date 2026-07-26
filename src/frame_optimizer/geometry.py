@@ -31,6 +31,13 @@ class NodeInfo:
     # provides rotational stiffness, and clamping these rotations with the
     # mechanism-stabilization supports would falsify its bending behavior.
     free_rotations: bool = False
+    # True for nodes whose X translation must stay free: every non-base node
+    # of a rigid truss bent. A beam node attracts no force through the
+    # blanket DX mechanism restraint (gravity needs no horizontal reactions),
+    # but a truss-frame node does — the restraint would absorb the diagonals'
+    # horizontal force components AND suppress the bent's frame action. The
+    # rigid bent supplies its own in-plane stiffness at these nodes.
+    free_dx: bool = False
 
 
 @dataclass(frozen=True)

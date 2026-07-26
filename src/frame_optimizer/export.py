@@ -24,7 +24,7 @@ from pathlib import Path
 from .analysis import build_model
 from .analysis.frame_model import (SERVICE_LIVE_COMBO, SERVICE_TOTAL_COMBO,
                                    STRENGTH_COMBOS)
-from .clear_span import ClearSpanConfig
+from .clear_span import TRUSS, ClearSpanConfig
 from .config import COLUMN, FrameConfig
 from .geometry import FrameGeometry, MemberInfo, NodeInfo
 from .optimization import geometry_for
@@ -73,18 +73,25 @@ def _base_columns(geometry: FrameGeometry) -> list[tuple[MemberInfo, NodeInfo]]:
             if m.group == COLUMN and m.i_node in base_nodes]
 
 
-def _base_reactions_fy(result: OptimizationResult, geometry: FrameGeometry,
-                       assignment: dict[str, WShape]) -> dict[str, dict[str, float]]:
-    """Vertical base reaction (kip, compression-positive) per node per combo.
+def _base_reactions(result: OptimizationResult, geometry: FrameGeometry,
+                    assignment: dict[str, WShape]) -> dict[str, dict[str, dict[str, float]]]:
+    """Base reactions per node per combo: {'FY': ..., 'FX': ...} (kip).
 
-    One linear solve of the final assignment; RxnFY is positive upward, i.e.
-    equal to the axial compression the column delivers to the baseplate.
+    One linear solve of the final assignment on the nominal-stiffness model
+    (DAM notional loads are stability devices, not real loads, so they are
+    excluded from exported reactions). RxnFY is positive upward, i.e. equal
+    to the axial compression the column delivers to the baseplate. RxnFX is
+    the horizontal thrust in the clear-span (X) direction — essentially zero
+    for the pinned wide-flange system, real and self-equilibrating for rigid
+    truss bents (frame action under gravity).
     """
     model = build_model(geometry, assignment, result.config)
     model.analyze(check_stability=True, check_statics=False, sparse=True)
     combos = list(STRENGTH_COMBOS) + [SERVICE_TOTAL_COMBO[0], SERVICE_LIVE_COMBO[0]]
     return {
-        node.name: {c: model.nodes[node.name].RxnFY[c] for c in combos}
+        node.name: {c: {"FY": model.nodes[node.name].RxnFY[c],
+                        "FX": model.nodes[node.name].RxnFX[c]}
+                    for c in combos}
         for node in geometry.nodes if node.is_base
     }
 
@@ -94,20 +101,23 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
     config = _require_config(result)
     geometry = geometry_for(config)
     assignment = _assignment(result)
-    reactions = _base_reactions_fy(result, geometry, assignment)
+    reactions = _base_reactions(result, geometry, assignment)
 
     strength_combos = list(STRENGTH_COMBOS)
     total_combo = SERVICE_TOTAL_COMBO[0]
     live_combo = SERVICE_LIVE_COMBO[0]
 
+    def by_combo_block(rxn: dict, component: str) -> dict:
+        block = {c: _r(rxn[c][component]) for c in strength_combos}
+        # linear analysis: service dead = (D+L) - L
+        block["D"] = _r(rxn[total_combo][component] - rxn[live_combo][component])
+        block[total_combo] = _r(rxn[total_combo][component])
+        block[live_combo] = _r(rxn[live_combo][component])
+        return block
+
     columns = []
     for member, base in sorted(_base_columns(geometry), key=lambda mb: mb[0].name):
         rxn = reactions[base.name]
-        by_combo = {c: _r(rxn[c]) for c in strength_combos}
-        # linear analysis: service dead = (D+L) - L
-        by_combo["D"] = _r(rxn[total_combo] - rxn[live_combo])
-        by_combo[total_combo] = _r(rxn[total_combo])
-        by_combo[live_combo] = _r(rxn[live_combo])
         columns.append({
             "member_id": member.name,
             "base_node": base.name,
@@ -117,8 +127,15 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
             },
             "column_height_in": _r(member.length_in),
             "axial_compression_kip": {
-                "Pu_governing_lrfd": _r(max(rxn[c] for c in strength_combos)),
-                "by_combo": by_combo,
+                "Pu_governing_lrfd": _r(max(rxn[c]["FY"] for c in strength_combos)),
+                "by_combo": by_combo_block(rxn, "FY"),
+            },
+            # thrust from rigid-bent frame action under gravity (truss
+            # girders); essentially zero for the pinned wide-flange system
+            "base_shear_x_kip": {
+                "Vu_governing_lrfd": _r(max(
+                    (abs(rxn[c]["FX"]) for c in strength_combos))),
+                "by_combo": by_combo_block(rxn, "FX"),
             },
         })
 
@@ -129,11 +146,17 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
         "units": {"length": "in", "force": "kip", "stress": "ksi"},
         "sign_convention": (
             "axial_compression_kip values are vertical base reactions, "
-            "positive in compression (bearing on the baseplate)"
+            "positive in compression (bearing on the baseplate); "
+            "base_shear_x_kip values are signed horizontal reactions in the "
+            "clear-span (X) direction"
         ),
         "notes": [
             "Gravity loads only; lateral (wind/seismic) base shear is out of "
             "scope of this model and must come from the lateral system design.",
+            "base_shear_x_kip is the gravity-induced thrust of rigid truss "
+            "bents (frame action); it is essentially zero for the pinned "
+            "wide-flange system. DAM notional loads (fictitious stability "
+            "loads) are excluded from exported reactions.",
             "Pu_governing_lrfd is the envelope over the LRFD strength combos "
             f"{strength_combos}; 'D', '{total_combo}', and '{live_combo}' are "
             "unfactored service-level values.",
@@ -152,11 +175,14 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
 def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
     """Type-specific plan/elevation summary of the building."""
     if isinstance(config, ClearSpanConfig):
-        return {
+        trussed = config.girder_system == TRUSS
+        girder_word = "Pratt truss girders" if trussed else "girders"
+        block = {
             "building_type": "clear_span",
             "description": ("transverse clear-span frames, no interior "
-                            "columns; one-way deck -> purlins -> girders "
+                            f"columns; one-way deck -> purlins -> {girder_word} "
                             "-> perimeter columns"),
+            "girder_system": config.girder_system,
             "span_ft": _r(config.span_ft),
             "length_ft": _r(config.length_ft),
             "eave_height_ft": _r(config.eave_height_ft),
@@ -167,6 +193,17 @@ def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
             "end_wall_columns_per_end": config.end_wall_columns,
             "girder_camber_in": _r(config.girder_camber_in),
         }
+        if trussed:
+            block.update({
+                # parallel-chord Pratt: bottom chord bears at the eave, top
+                # chord (and roof plane) at eave + depth
+                "truss_depth_ft": _r(config.truss_depth_ft),
+                "truss_n_panels": config.n_truss_panels,
+                "truss_panel_ft": _r(config.truss_panel_actual_ft),
+                "roof_elevation_ft": _r(config.eave_height_ft
+                                        + config.truss_depth_ft),
+            })
+        return block
     return {
         "building_type": "grid_frame",
         "description": "conventional column grid, one-way deck on floor beams",

@@ -22,6 +22,11 @@ class OptimizationResult:
                                       # optimize_layout() only: one entry per
                                       # candidate layout tried (this result is
                                       # the winner)
+    system_search: list[dict] = field(default_factory=list)
+                                      # optimize_layout() with girder_system=
+                                      # 'auto' + truss candidates: one entry
+                                      # per girder system considered, with the
+                                      # decision and its reason
 
     def summary(self) -> str:
         lines = ["=" * 62, "frame_optimizer - gravity frame optimization result", "=" * 62]
@@ -39,6 +44,16 @@ class OptimizationResult:
                 f"Layout: lightest of {n_feasible} feasible / "
                 f"{len(self.layout_search)} realistic layout(s) searched "
                 "for the footprint")
+        for entry in self.system_search:
+            name = entry["girder_system"]
+            if not entry["evaluated"]:
+                lines.append(f"System: {name} skipped — {entry['note']}")
+            else:
+                chosen = " (chosen)" if entry["chosen"] else ""
+                note = f" — {entry['note']}" if entry.get("note") else ""
+                lines.append(
+                    f"System: {name} — {entry['feasible_layouts']}/"
+                    f"{entry['layouts']} layout(s) feasible{chosen}{note}")
 
         lines.append("-" * 62)
         lines.append("Selected sections:")

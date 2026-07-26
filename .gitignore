@@ -3,3 +3,6 @@ __pycache__/
 member_checks.csv
 .pytest_cache/
 output/
+.vscode/
+.claude/
+.continue/
