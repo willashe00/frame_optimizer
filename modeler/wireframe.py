@@ -118,6 +118,7 @@ def _polyline(segments):
 
 
 def visualize_result(result: OptimizationResult, path: str = "structure_wireframe.html",
+                     geometry=None,
                      show: bool = True) -> Path:
     """Write a standalone interactive HTML wireframe of the final design.
 
@@ -127,7 +128,8 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
         raise ValueError("OptimizationResult.config is None; visualize_result "
                          "needs the config to rebuild the frame geometry.")
 
-    geometry = geometry_for(result.config)
+    if geometry is None:   # default: rebuild from the config; the lateral
+        geometry = geometry_for(result.config)   # phase passes its own
     ends = _member_ends_ft(geometry)
     checks = {row["member"]: row for _, row in result.member_table.iterrows()}
 

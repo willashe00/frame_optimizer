@@ -29,7 +29,7 @@ from .config import COLUMN, FrameConfig
 from .geometry import FrameGeometry, MemberInfo, NodeInfo
 from .optimization import geometry_for
 from .results import OptimizationResult
-from .sections import WShape, get_shapes
+from .sections import WShape, get_shapes, is_rod
 
 _SCHEMA_VERSION = 1
 
@@ -54,6 +54,14 @@ def _assignment(result: OptimizationResult) -> dict[str, WShape]:
 
 def _section_dimensions(shape: WShape) -> dict:
     """The profile dimensions downstream geometry consumers need."""
+    if is_rod(shape):
+        return {
+            "name": shape.name,
+            "profile_type": "threaded rod (ASTM A36)",
+            "diameter_in": _r(shape.d),
+            "area_in2": _r(shape.A),
+            "nominal_weight_plf": _r(shape.weight_plf),
+        }
     return {
         "name": shape.name,
         "profile_type": "W-shape (AISC)",
@@ -217,10 +225,18 @@ def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
     }
 
 
-def building_configuration(result: OptimizationResult) -> dict:
-    """Full optimized building (geometry + sections) for IFC authoring."""
+def building_configuration(result: OptimizationResult,
+                           geometry: FrameGeometry | None = None,
+                           lateral_block: dict | None = None) -> dict:
+    """Full optimized building (geometry + sections) for IFC authoring.
+
+    `geometry` overrides the config-rebuilt geometry (the lateral phase
+    passes its augmented geometry so braces/struts are included);
+    `lateral_block` is attached as a 'lateral_system' section when given.
+    """
     config = _require_config(result)
-    geometry = geometry_for(config)
+    if geometry is None:
+        geometry = geometry_for(config)
     assignment = _assignment(result)
 
     group_rows = {row["group"]: row for _, row in result.group_summary.iterrows()}
@@ -274,7 +290,11 @@ def building_configuration(result: OptimizationResult) -> dict:
             "strength_combinations": list(STRENGTH_COMBOS),
             "lateral_loads": "out of scope (separate lateral system assumed)",
         },
-        "connections": "all members pin-ended; column bases pinned",
+        "connections": ("moment-connected girder-column knees (portal "
+                        "frames); other members pin-ended; bases pinned"
+                        if getattr(config, "transverse_moment_frame", False)
+                        else "all members pin-ended; column bases pinned"),
+        **({"lateral_system": lateral_block} if lateral_block else {}),
         "design_groups": design_groups,
         "nodes": nodes,
         "members": members,

@@ -43,6 +43,65 @@ def normalize_name(name: str) -> str:
     return name.upper().replace(" ", "")
 
 
+# ---------------------------------------------------------------------------
+# Threaded-rod family: the real-world section for tension-only X bracing.
+#
+# Labels: "ROD3/4", "ROD1", "ROD1-1/8", ... (diameter in inches, mixed
+# fractions with '-'). Rods are represented as WShape records with exact
+# round-bar geometry (A = pi d^2/4, I = pi d^4/64, r = d/4, ...) so they
+# flow through the analysis/assignment plumbing unchanged; the plate-element
+# slenderness fields are set fully compact (they do not exist on a bar) and
+# the DESIGN of rods bypasses the W-shape flexure machinery entirely — see
+# design/checker.py (tension-only per AISC D2/J3.6, L/r limit not
+# applicable per the D1 user note).
+# ---------------------------------------------------------------------------
+ROD_PREFIX = "ROD"
+_STEEL_PLF_PER_IN2 = 490.0 / 144.0   # lb/ft of length per in^2 of area
+
+
+def is_rod(shape_or_name) -> bool:
+    name = getattr(shape_or_name, "name", shape_or_name)
+    return str(name).upper().startswith(ROD_PREFIX)
+
+
+def _rod_diameter_in(label: str) -> float:
+    """'ROD1-1/8' -> 1.125 (mixed fraction after the ROD prefix)."""
+    body = label[len(ROD_PREFIX):]
+    try:
+        total = 0.0
+        for part in body.split("-"):
+            if "/" in part:
+                num, den = part.split("/")
+                total += float(num) / float(den)
+            else:
+                total += float(part)
+        if total <= 0.0:
+            raise ValueError
+        return total
+    except (ValueError, ZeroDivisionError):
+        raise ValueError(
+            f"Unrecognized rod label {label!r}. Use ROD<diameter> with a "
+            "mixed fraction in inches, e.g. 'ROD3/4', 'ROD1', 'ROD1-1/8'."
+        ) from None
+
+
+def rod_shape(label: str) -> WShape:
+    """Exact round-bar properties for one rod label (see block comment)."""
+    import math
+    d = _rod_diameter_in(label)
+    A = math.pi * d**2 / 4.0
+    I = math.pi * d**4 / 64.0
+    return WShape(
+        name=label, weight_plf=A * _STEEL_PLF_PER_IN2, A=A,
+        d=d, bf=d, tf=d / 2.0, tw=d / 2.0,
+        Ix=I, Zx=d**3 / 6.0, Sx=math.pi * d**3 / 32.0, rx=d / 4.0,
+        Iy=I, Zy=d**3 / 6.0, Sy=math.pi * d**3 / 32.0, ry=d / 4.0,
+        J=math.pi * d**4 / 32.0, Cw=0.0,
+        bf_2tf=1.0, h_tw=1.0,          # a bar has no slender plate elements
+        rts=d / 4.0, ho=d,             # keep the (unused) F2 terms finite
+    )
+
+
 @lru_cache(maxsize=1)
 def load_w_shapes() -> dict[str, WShape]:
     """Return the full catalog as {name: WShape}."""
@@ -52,17 +111,19 @@ def load_w_shapes() -> dict[str, WShape]:
 
 
 def get_shapes(names: list[str]) -> list[WShape]:
-    """Resolve candidate names to WShapes, sorted lightest-first.
+    """Resolve candidate names (W-shapes and RODs) sorted lightest-first.
 
     Raises ValueError listing every unrecognized name.
     """
     catalog = load_w_shapes()
     normalized = [normalize_name(n) for n in names]
-    unknown = [n for n in normalized if n not in catalog]
+    unknown = [n for n in normalized if n not in catalog and not is_rod(n)]
     if unknown:
         raise ValueError(
-            f"Unknown W-shape name(s): {unknown}. "
-            "Use AISC Manual labels such as 'W18X35'."
+            f"Unknown section name(s): {unknown}. "
+            "Use AISC Manual labels such as 'W18X35', or rod labels such "
+            "as 'ROD3/4'."
         )
-    shapes = [catalog[n] for n in dict.fromkeys(normalized)]  # dedupe, keep order
+    shapes = [rod_shape(n) if is_rod(n) else catalog[n]
+              for n in dict.fromkeys(normalized)]  # dedupe, keep order
     return sorted(shapes, key=lambda s: s.weight_plf)

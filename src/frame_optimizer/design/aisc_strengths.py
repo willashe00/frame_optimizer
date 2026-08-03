@@ -42,6 +42,23 @@ def tension_capacity(shape: WShape, Fy: float) -> Strength:
     return Strength(PHI_T * Fy * shape.A, "D2 (tension yielding)")
 
 
+# Threaded rods: ASTM A36 / F1554 Grade 36, the standard X-bracing material
+ROD_FY_KSI = 36.0
+ROD_FU_KSI = 58.0
+
+
+def rod_tension_capacity(shape: WShape) -> Strength:
+    """Design tension of a threaded A36 rod: gross-section yielding (D2)
+    vs. rupture through the threads per J3.6 (Fn = 0.75 Fu on the nominal
+    body area, phi = 0.75 — the 0.75 factor on Fu accounts for the reduced
+    thread net area, so no separate An is needed)."""
+    phi_yield = PHI_T * ROD_FY_KSI * shape.A
+    phi_thread = 0.75 * 0.75 * ROD_FU_KSI * shape.A
+    if phi_yield <= phi_thread:
+        return Strength(phi_yield, "D2 (rod gross yielding, A36)")
+    return Strength(phi_thread, "J3.6 (thread rupture, A36)")
+
+
 def _e3_critical_stress(Fy: float, E: float, klr: float) -> float:
     """E3 flexural-buckling stress for one axis."""
     if klr < 1e-9:

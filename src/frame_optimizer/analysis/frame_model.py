@@ -55,6 +55,7 @@ Units: kips and inches throughout.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
 from Pynite import FEModel3D
 
@@ -75,9 +76,12 @@ _NOTIONAL_CASE = {"D": "ND", "L": "NL"}   # gravity case -> its notional case
 
 
 def _rigid_frame(config) -> bool:
-    """Truss-girder buildings are rigid transverse bents (DAM analysis);
-    everything else is the fully pinned gravity frame."""
-    return getattr(config, "girder_system", None) == TRUSS
+    """Rigid transverse frames get the DAM analysis: truss-girder buildings
+    (rigid bents) and W-girder buildings whose lateral phase moment-connects
+    the knees (transverse_moment_frame — see lateral_system.py). Everything
+    else is the fully pinned gravity frame."""
+    return (getattr(config, "girder_system", None) == TRUSS
+            or getattr(config, "transverse_moment_frame", False))
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,8 @@ def _notional_node_loads(geometry: FrameGeometry, assignment: dict[str, WShape],
 
 
 def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
-                config: FrameConfig, rigid_strength: bool = False) -> FEModel3D:
+                config: FrameConfig, rigid_strength: bool = False,
+                strength_combos: dict[str, dict[str, float]] | None = None) -> FEModel3D:
     """Assemble the Pynite model for one {group: shape} assignment.
 
     rigid_strength=True builds the DAM strength model for rigid truss bents:
@@ -180,7 +185,13 @@ def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
     added, carried into the strength combos with their parent-case factors.
     The default model (nominal stiffness, no notional loads) serves
     serviceability, reaction export, and every pinned-frame analysis.
+
+    strength_combos (None -> the gravity STRENGTH_COMBOS) lets the lateral
+    phase register additional combinations, e.g. wind/seismic ones from
+    lateral_loads.all_strength_combos(). Factors may reference any load
+    case; cases with no loads applied simply contribute nothing.
     """
+    combos = STRENGTH_COMBOS if strength_combos is None else strength_combos
     model = FEModel3D()
     E, nu = config.E_ksi, 0.3
     if rigid_strength:
@@ -210,7 +221,11 @@ def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
 
     for m in geometry.members:
         model.add_member(m.name, m.i_node, m.j_node, "steel", m.group)
-        model.def_releases(m.name, Ryi=True, Rzi=True, Ryj=True, Rzj=True)
+        # bending released at each end unless a moment connection is declared
+        # there (fixed_i/fixed_j — portal-frame knees); torsion stays attached
+        model.def_releases(m.name,
+                           Ryi=not m.fixed_i, Rzi=not m.fixed_i,
+                           Ryj=not m.fixed_j, Rzj=not m.fixed_j)
 
         shape = assignment[m.group]
         w_self = shape.weight_plf * PLF_TO_KIP_PER_IN
@@ -224,11 +239,12 @@ def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
         for node, case, fx in _notional_node_loads(geometry, assignment, config):
             model.add_node_load(node, "FX", fx, case=case)
 
-    for name, factors in STRENGTH_COMBOS.items():
+    for name, factors in combos.items():
         if rigid_strength:
             # notional loads track their parent gravity case's factor (C2.2b)
             factors = {**factors,
-                       **{_NOTIONAL_CASE[c]: f for c, f in factors.items()}}
+                       **{_NOTIONAL_CASE[c]: f for c, f in factors.items()
+                          if c in _NOTIONAL_CASE}}
         model.add_load_combo(name, factors)
     if not rigid_strength:
         # service combos live in the nominal-stiffness model only; the DAM
@@ -258,6 +274,9 @@ def _chord_relative_sag(member, length: float, combo: str, n: int = 20) -> float
     two supports settle by different amounts (e.g. a purlin spanning between
     an interior girder and a stiffer end girder), which tilts the deflected
     shape and shifts its minimum away from midspan."""
+    # never sample past the member's real end: a stored length that exceeds
+    # the node-geometry length by any amount would raise inside Pynite
+    length = min(length, member.L())
     d0 = member.deflection("dy", 0.0, combo)
     dL = member.deflection("dy", length, combo)
     worst = 0.0
@@ -270,13 +289,19 @@ def _chord_relative_sag(member, length: float, combo: str, n: int = 20) -> float
 
 def extract_demands(model: FEModel3D, geometry: FrameGeometry,
                     assignment: dict[str, WShape],
-                    service_model: FEModel3D | None = None) -> list[MemberDemand]:
+                    service_model: FEModel3D | None = None,
+                    strength_combos: Iterable[str] | None = None) -> list[MemberDemand]:
     """Envelope each member's design actions over the strength combos.
 
     `model` supplies the strength actions; deflections come from
     `service_model` when given (rigid bents: nominal stiffness, no notional
     loads) and from `model` otherwise (pinned frames: one model serves both).
+    strength_combos names the combos to envelope (None -> the gravity
+    STRENGTH_COMBOS; passing the dict used for build_model works — iterating
+    it yields its keys).
     """
+    combo_names = list(STRENGTH_COMBOS if strength_combos is None
+                       else strength_combos)
     node_y = {n.name: n.y for n in geometry.nodes}
     defl_model = model if service_model is None else service_model
     demands = []
@@ -288,7 +313,7 @@ def extract_demands(model: FEModel3D, geometry: FrameGeometry,
 
         Pu_min = Pu_max = 0.0
         Mux = Muy = Vu = 0.0
-        for combo in STRENGTH_COMBOS:
+        for combo in combo_names:
             # Pynite: compression positive -> flip to tension-positive and
             # keep BOTH signed extremes (chords in rigid bents reverse sign
             # along their length: midspan tension, end compression)
@@ -320,20 +345,27 @@ def extract_demands(model: FEModel3D, geometry: FrameGeometry,
 
 
 def analyze_frame(geometry: FrameGeometry, assignment: dict[str, WShape],
-                  config: FrameConfig) -> list[MemberDemand]:
+                  config: FrameConfig,
+                  strength_combos: dict[str, dict[str, float]] | None = None) -> list[MemberDemand]:
     """Build, solve, and extract demands for one candidate assignment.
 
     Pinned frames: one linear model. Rigid truss bents: the DAM strength
     model (0.8E, notional loads) solved second-order via P-Delta, plus a
     nominal-stiffness linear model for serviceability deflections.
+    strength_combos (None -> gravity defaults) is enveloped as-is; see
+    build_model.
     """
     if _rigid_frame(config):
-        strength = build_model(geometry, assignment, config, rigid_strength=True)
+        strength = build_model(geometry, assignment, config, rigid_strength=True,
+                               strength_combos=strength_combos)
         strength.analyze_PDelta(check_stability=True, sparse=True)
         service = build_model(geometry, assignment, config)
         service.analyze(check_stability=True, check_statics=False, sparse=True)
         return extract_demands(strength, geometry, assignment,
-                               service_model=service)
-    model = build_model(geometry, assignment, config)
+                               service_model=service,
+                               strength_combos=strength_combos)
+    model = build_model(geometry, assignment, config,
+                        strength_combos=strength_combos)
     model.analyze(check_stability=True, check_statics=False, sparse=True)
-    return extract_demands(model, geometry, assignment)
+    return extract_demands(model, geometry, assignment,
+                           strength_combos=strength_combos)

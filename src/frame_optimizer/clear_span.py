@@ -312,6 +312,13 @@ class ClearSpanConfig:
     truss_chord_candidates: list[str] | None = None   # both chords; screened
                                                       # independently per group
     truss_web_candidates: list[str] | None = None     # verticals + diagonals
+
+    # --- lateral phase only (set by lateral_system.build_lateral_system via
+    # --- dataclasses.replace, NOT a gravity input): moment-connect the
+    # --- W-girder knees so the transverse frames are portal frames analyzed
+    # --- with the AISC Direct Analysis Method. Meaningless for trusses,
+    # --- whose bents are already rigid.
+    transverse_moment_frame: bool = False
     truss_depth_ft: float | None = None    # None -> span/12 (practice target)
     truss_panel_ft: float | None = None    # target; actual = span/n_panels
                                            # (None -> even count, diagonals ~45 deg)
@@ -361,6 +368,10 @@ class ClearSpanConfig:
                         f"{orphaned} require truss_chord_candidates and "
                         "truss_web_candidates (the truss fallback needs "
                         "sections to build from).")
+        if self.girder_system == TRUSS and self.transverse_moment_frame:
+            raise ValueError(
+                "transverse_moment_frame only applies to W-girder buildings: "
+                "truss-girder frames are already rigid bents.")
         if self.girder_system == TRUSS and self.end_girder_candidates is not None:
             raise ValueError(
                 "end_girder_candidates is not supported with "

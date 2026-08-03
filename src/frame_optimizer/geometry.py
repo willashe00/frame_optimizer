@@ -50,6 +50,13 @@ class MemberInfo:
     story: int          # story number for columns, floor level for beams (1-based)
     trib_width_in: float  # one-way tributary width; 0 for columns and for
                           # beams running parallel to the deck span
+    # Moment connection at an end: the analysis keeps that end's bending
+    # rotations ATTACHED instead of released. Used by the lateral system to
+    # turn W-girder transverse frames into portal frames (girder ends and
+    # column tops fixed at the knees). Both False -> the long-standing fully
+    # pinned member.
+    fixed_i: bool = False
+    fixed_j: bool = False
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ import pandas as pd
 
 from ..analysis import MemberDemand
 from ..config import BEAM, COLUMN, FT, FrameConfig
-from ..sections import WShape
+from ..sections import WShape, is_rod
 from . import aisc_strengths as st
 
 # AISC 360 Eq. F1-1 evaluated at the quarter points of a parabolic moment
@@ -75,6 +75,10 @@ class GroupRules:
     camber_in: float = 0.0
     KLx_in: float | None = None
     KLy_in: float | None = None
+    # KL/r (or L/r) limit used by the slenderness check: 200 for members
+    # that resist compression (E2 user note), 300 for primarily-tension
+    # members such as X-brace diagonals (AISC 360 D1 user note)
+    slenderness_limit: float = 200.0
 
 
 @dataclass(frozen=True)
@@ -127,14 +131,43 @@ def _unbraced_length(demand: MemberDemand, rules: GroupRules) -> float:
     return demand.length_in
 
 
+def _check_rod(shape: WShape, demand: MemberDemand) -> dict:
+    """Threaded-rod check: TENSION ONLY, per how rod X bracing is actually
+    designed. Compression makes the rod go slack (that IS the tension-only
+    X assumption — the partner diagonal carries the reversed load); the
+    D1 user-note slenderness limit explicitly does not apply to rods; and
+    self-weight rides on sag/draw (the rods are installed with a modest
+    pretension), so flexure and shear are not member limit states. The
+    row keeps the standard reporting columns with the inapplicable checks
+    zeroed."""
+    T = demand.Pu_tension
+    phi_Tn, clause = st.rod_tension_capacity(shape)
+    uc = T / max(phi_Tn, 1e-12)
+    return {
+        "member": demand.name, "group": demand.group, "story": demand.story,
+        "profile": shape.name, "length_ft": demand.length_in / FT,
+        "Pu_kip": T, "phiPn_kip": phi_Tn, "axial_clause": clause,
+        "Mux_kipft": 0.0, "phiMnx_kipft": 0.0, "Mx_clause": "n/a (rod)",
+        "Muy_kipft": 0.0, "phiMny_kipft": 0.0, "My_clause": "n/a (rod)",
+        "Vu_kip": 0.0, "phiVn_kip": 0.0, "V_clause": "n/a (rod)",
+        "H1_clause": "n/a (rod)",
+        "UC_axial": uc, "UC_Mx": 0.0, "UC_My": 0.0, "UC_V": 0.0, "UC_H1": 0.0,
+        "governing_uc": uc, "governing_limitstate": "axial",
+        "PASS": uc <= 1.0,
+    }
+
+
 def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> dict:
     """All applicable unity checks for one member with a candidate section.
 
     Deflections were computed by FEA with section demand.Ix_used; elastic
     deflection scales as 1/I, so they are projected onto the candidate with
     the ratio Ix_used/Ix (exact when the candidate is the analyzed section,
-    since loads are re-derived each optimizer iteration).
+    since loads are re-derived each optimizer iteration). Rod candidates
+    take their own tension-only path (see _check_rod).
     """
+    if is_rod(shape):
+        return _check_rod(shape, demand)
     Fy, Fu, E = params.Fy, params.Fu, params.E
     rules = params.rules_for(demand.group)
     L = demand.length_in
@@ -189,7 +222,8 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
     # actually resist compression, enabled per group (columns). Uses the same
     # per-axis effective lengths as the strength check.
     if rules.check_slenderness:
-        ucs["UC_slenderness"] = max(KLx / shape.rx, KLy / shape.ry) / 200.0
+        ucs["UC_slenderness"] = (max(KLx / shape.rx, KLy / shape.ry)
+                                 / rules.slenderness_limit)
 
     if rules.check_deflection:
         scale = demand.Ix_used / shape.Ix
