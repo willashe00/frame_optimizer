@@ -7,7 +7,7 @@ Two building types share the pipeline: FrameConfig (conventional column grid)
 and ClearSpanConfig (clear-span industrial building, no interior columns).
 """
 from .clear_span import ClearSpanConfig
-from .config import M_TO_FT, FrameConfig
+from .config import FrameConfig
 from .export import (baseplate_inputs, building_configuration,
                      write_baseplate_json, write_building_json)
 from .optimization import evaluate, geometry_for, optimize, optimize_layout
@@ -17,7 +17,6 @@ from .sections import WShape, get_shapes, load_w_shapes
 __all__ = [
     "ClearSpanConfig",
     "FrameConfig",
-    "M_TO_FT",
     "OptimizationResult",
     "WShape",
     "baseplate_inputs",

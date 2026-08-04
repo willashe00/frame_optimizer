@@ -12,7 +12,7 @@ Rendering choices:
 * Members that fail their checks are overdrawn in the reserved critical color
   with their own legend entry, so a failed design is impossible to misread.
 * Model Y is vertical; plotly's scene Z is up, so coordinates map
-  (x, y, z) -> (x, z, y) and axes are titled X / Z / Elevation in feet.
+  (x, y, z) -> (x, z, y) and axes are titled X / Z / Elevation in meters.
 
 Only `visualize_result` is public. Everything here is display-only: no part of
 frame_optimizer depends on this module.
@@ -24,7 +24,7 @@ from pathlib import Path
 import plotly.graph_objects as go
 
 from frame_optimizer import geometry_for
-from frame_optimizer.config import FT
+from frame_optimizer.config import IN_TO_M
 from frame_optimizer.geometry import BEAM, COLUMN
 from frame_optimizer.results import OptimizationResult
 
@@ -67,23 +67,23 @@ def _hover_card(name: str, group: str, section: str, row) -> str:
     verdict = "PASS" if row["PASS"] else "<b>FAIL</b>"
     lines = [
         f"<b>{name}</b> — {group} · <b>{row['profile']}</b>",
-        f"L = {row['length_ft']:.1f} ft · story {int(row['story'])}",
+        f"L = {row['length_m']:.2f} m · story {int(row['story'])}",
         f"governing DCR <b>{row['governing_uc']:.2f}</b> "
         f"[{row['governing_limitstate']}] · {verdict}",
     ]
     if row["UC_axial"] >= _SHOW_UC:
-        kind = "compression" if row["Pu_kip"] < 0 else "tension"
-        lines.append(f"P ({kind}): {abs(row['Pu_kip']):,.1f} / "
-                     f"{row['phiPn_kip']:,.0f} kip · DCR {row['UC_axial']:.2f}")
+        kind = "compression" if row["Pu_kN"] < 0 else "tension"
+        lines.append(f"P ({kind}): {abs(row['Pu_kN']):,.1f} / "
+                     f"{row['phiPn_kN']:,.0f} kN · DCR {row['UC_axial']:.2f}")
     if row["UC_Mx"] >= _SHOW_UC:
-        lines.append(f"Mx: {row['Mux_kipft']:,.1f} / "
-                     f"{row['phiMnx_kipft']:,.0f} kip·ft · DCR {row['UC_Mx']:.2f}")
+        lines.append(f"Mx: {row['Mux_kNm']:,.1f} / "
+                     f"{row['phiMnx_kNm']:,.0f} kN·m · DCR {row['UC_Mx']:.2f}")
     if row["UC_My"] >= _SHOW_UC:
-        lines.append(f"My: {row['Muy_kipft']:,.1f} / "
-                     f"{row['phiMny_kipft']:,.0f} kip·ft · DCR {row['UC_My']:.2f}")
+        lines.append(f"My: {row['Muy_kNm']:,.1f} / "
+                     f"{row['phiMny_kNm']:,.0f} kN·m · DCR {row['UC_My']:.2f}")
     if row["UC_V"] >= _SHOW_UC:
-        lines.append(f"V: {row['Vu_kip']:,.1f} / "
-                     f"{row['phiVn_kip']:,.0f} kip · DCR {row['UC_V']:.2f}")
+        lines.append(f"V: {row['Vu_kN']:,.1f} / "
+                     f"{row['phiVn_kN']:,.0f} kN · DCR {row['UC_V']:.2f}")
     if row["UC_H1"] >= _SHOW_UC:
         lines.append(f"P–M interaction (H1): DCR {row['UC_H1']:.2f}")
     slender = row.get("UC_slenderness")
@@ -95,9 +95,10 @@ def _hover_card(name: str, group: str, section: str, row) -> str:
     return "<br>".join(lines)
 
 
-def _member_ends_ft(geometry) -> dict[str, tuple]:
-    """member name -> ((xi, yi, zi), (xj, yj, zj)) in feet."""
-    nodes = {n.name: (n.x / FT, n.y / FT, n.z / FT) for n in geometry.nodes}
+def _member_ends_m(geometry) -> dict[str, tuple]:
+    """member name -> ((xi, yi, zi), (xj, yj, zj)) in meters."""
+    nodes = {n.name: (n.x * IN_TO_M, n.y * IN_TO_M, n.z * IN_TO_M)
+             for n in geometry.nodes}
     return {m.name: (nodes[m.i_node], nodes[m.j_node]) for m in geometry.members}
 
 
@@ -122,7 +123,7 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
                          "needs the config to rebuild the frame geometry.")
 
     geometry = geometry_for(result.config)
-    ends = _member_ends_ft(geometry)
+    ends = _member_ends_m(geometry)
     checks = {row["member"]: row for _, row in result.member_table.iterrows()}
 
     fig = go.Figure()
@@ -180,8 +181,8 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
     # pinned bases
     base = [n for n in geometry.nodes if n.is_base]
     fig.add_trace(go.Scatter3d(
-        x=[n.x / FT for n in base], y=[n.z / FT for n in base],
-        z=[n.y / FT for n in base],
+        x=[n.x * IN_TO_M for n in base], y=[n.z * IN_TO_M for n in base],
+        z=[n.y * IN_TO_M for n in base],
         mode="markers",
         marker=dict(size=4, color=_MUTED, symbol="diamond"),
         name="pinned base", hoverinfo="skip",
@@ -200,7 +201,7 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
     status = "feasible" if result.feasible else "INFEASIBLE — best attempt shown"
     parts = " · ".join(f"{g}: {s}" for g, s in result.sections.items())
     title = (
-        f"<b>Optimized gravity frame</b> — {result.total_weight_lb:,.0f} lb ({status})"
+        f"<b>Optimized gravity frame</b> — {result.total_weight_kg:,.0f} kg ({status})"
         f"<br><span style='font-size:13px;color:{_INK_2}'>{parts}</span>"
     )
 
@@ -216,9 +217,9 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
         font=dict(family=_FONT, color=_INK),
         paper_bgcolor=_SURFACE,
         scene=dict(
-            xaxis={**axis, "title": "X (ft)"},
-            yaxis={**axis, "title": "Z (ft)"},
-            zaxis={**axis, "title": "Elevation (ft)"},
+            xaxis={**axis, "title": "X (m)"},
+            yaxis={**axis, "title": "Z (m)"},
+            zaxis={**axis, "title": "Elevation (m)"},
             aspectmode="data",
             camera=dict(eye=dict(x=1.7, y=1.4, z=0.8)),
         ),

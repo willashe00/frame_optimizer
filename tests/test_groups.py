@@ -36,12 +36,12 @@ def small_config():
     return FrameConfig(
         beam_candidates=["W10X12", "W12X16", "W14X22"],
         column_candidates=["W6X9", "W8X24"],
-        x_bays=1, x_bay_spacing_ft=20.0,
-        z_bays=1, z_bay_spacing_ft=20.0,
-        stories=1, story_height_ft=10.0,
-        superimposed_dead_psf=20.0, live_psf=50.0,
+        x_bays=1, x_bay_spacing_m=20.0 * 0.3048,
+        z_bays=1, z_bay_spacing_m=20.0 * 0.3048,
+        stories=1, story_height_m=10.0 * 0.3048,
+        superimposed_dead_kpa=0.958, live_kpa=2.394,
         deck_span_direction="z",
-        beam_Lb_ft=0.0,
+        beam_Lb_m=0.0,
     )
 
 
@@ -70,7 +70,7 @@ def test_unbraced_length_credit_per_group():
     # the conservative default Lb = full 20-ft span (well past Lr for W12X16).
     braced = check_member(SHAPE, demand(Mux=100.0), params({"girder": GroupRules(Lb_in=0.0)}))
     unbraced = check_member(SHAPE, demand(Mux=100.0), params({"girder": GroupRules()}))
-    assert braced["phiMnx_kipft"] > unbraced["phiMnx_kipft"]
+    assert braced["phiMnx_kNm"] > unbraced["phiMnx_kNm"]
 
 
 def test_deflection_rules_per_group():
@@ -93,13 +93,13 @@ def test_simple_span_Cb_scales_elastic_ltb_capacity():
     d = demand(Mux=100.0)
     off = check_member(SHAPE, d, params({"girder": GroupRules()}))
     on = check_member(SHAPE, d, params({"girder": GroupRules(Cb_simple_span=True)}))
-    assert on["phiMnx_kipft"] == pytest.approx(
-        off["phiMnx_kipft"] * 12.5 / 11.0, rel=1e-9)
+    assert on["phiMnx_kNm"] == pytest.approx(
+        off["phiMnx_kNm"] * 12.5 / 11.0, rel=1e-9)
     # braced members (multiple unbraced segments / Lb < L) keep Cb = 1.0
     braced_off = check_member(SHAPE, d, params({"girder": GroupRules(Lb_in=60.0)}))
     braced_on = check_member(SHAPE, d, params(
         {"girder": GroupRules(Lb_in=60.0, Cb_simple_span=True)}))
-    assert braced_on["phiMnx_kipft"] == pytest.approx(braced_off["phiMnx_kipft"])
+    assert braced_on["phiMnx_kNm"] == pytest.approx(braced_off["phiMnx_kNm"])
 
 
 def test_camber_credits_total_deflection_never_below_live():

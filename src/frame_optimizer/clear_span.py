@@ -29,20 +29,21 @@ Analysis model (explicit purlins):
   mechanism-stabilization supports do not falsify girder bending.
 * Girders therefore carry only their self-weight as a line load; all roof
   load reaches them through the purlins. Total statics close exactly.
-* `live_psf` is the governing roof live/snow surface load (ASCE 7 roof live
-  Lr is 20 psf minimum; use the governing of Lr and the flat-roof snow load
-  for the site). Lateral loads remain out of scope exactly as for the grid
-  frame — a separate system must provide wind/seismic resistance.
+* `live_kpa` is the governing roof live/snow surface load (ASCE 7 roof live
+  Lr is ~0.96 kPa / 20 psf minimum; use the governing of Lr and the
+  flat-roof snow load for the site). Lateral loads remain out of scope
+  exactly as for the grid frame — a separate system must provide
+  wind/seismic resistance.
 
-Interface units are feet and psf (use M_TO_FT for metric plan dimensions);
-everything internal is kips and inches.
+Interface units are SI: meters, kPa, MPa, and millimeters for camber.
+Everything internal is kips and inches (see config.py conversion constants).
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 
-from .config import COLUMN, FT
+from .config import COLUMN, FT_TO_M, M_TO_IN, MM_TO_IN
 from .design import CheckParams, GroupRules
 from .geometry import FrameGeometry, MemberInfo, NodeInfo
 
@@ -58,80 +59,82 @@ _COINCIDENT_TOL_IN = 1e-6
 #
 # The building footprint (span, length, eave height) is the input; the layout
 # (frame count, purlin spacing, gable columns) is derived from it. These bands
-# bound the derivation to configurations a fabricator would actually build:
+# bound the derivation to configurations a fabricator would actually build.
+# The values are the customary US-practice bands (20-30 ft bays, 4-6 ft
+# purlins, 15-25 ft end-girder segments), converted exactly to meters:
 #
 # * Bay (frame) spacing: hot-rolled W purlins span frame-to-frame economically
-#   at ~20-30 ft; ~25 ft is the customary sweet spot for industrial bays.
-# * Purlin spacing: one-way roof deck spans economically at ~4-6 ft o.c.
+#   at ~6-9 m; ~7.6 m is the customary sweet spot for industrial bays.
+# * Purlin spacing: one-way roof deck spans economically at ~1.2-1.8 m o.c.
 # * End-wall (gable) columns: end-girder segments between supports typically
-#   run ~15-25 ft along the end wall.
+#   run ~4.6-7.6 m along the end wall.
 # ---------------------------------------------------------------------------
-MIN_FRAME_SPACING_FT = 20.0
-TARGET_FRAME_SPACING_FT = 25.0
-MAX_FRAME_SPACING_FT = 30.0
-MIN_PURLIN_SPACING_FT = 4.0
-TARGET_PURLIN_SPACING_FT = 5.0
-MAX_PURLIN_SPACING_FT = 6.0
-MIN_END_GIRDER_SEGMENT_FT = 15.0
-MAX_END_GIRDER_SEGMENT_FT = 25.0
+MIN_FRAME_SPACING_M = 20.0 * FT_TO_M      # 6.096 m
+TARGET_FRAME_SPACING_M = 25.0 * FT_TO_M   # 7.62 m
+MAX_FRAME_SPACING_M = 30.0 * FT_TO_M      # 9.144 m
+MIN_PURLIN_SPACING_M = 4.0 * FT_TO_M      # 1.219 m
+TARGET_PURLIN_SPACING_M = 5.0 * FT_TO_M   # 1.524 m
+MAX_PURLIN_SPACING_M = 6.0 * FT_TO_M      # 1.829 m
+MIN_END_GIRDER_SEGMENT_M = 15.0 * FT_TO_M  # 4.572 m
+MAX_END_GIRDER_SEGMENT_M = 25.0 * FT_TO_M  # 7.62 m
 
-_LAYOUT_FIELDS = ("n_frames", "purlin_spacing_ft", "end_wall_columns")
+_LAYOUT_FIELDS = ("n_frames", "purlin_spacing_m", "end_wall_columns")
 
 
-def derive_n_frames(length_ft: float) -> int:
-    """Frame count putting bays as close to TARGET_FRAME_SPACING_FT as the
-    length allows, never above MAX_FRAME_SPACING_FT. Buildings no longer than
+def derive_n_frames(length_m: float) -> int:
+    """Frame count putting bays as close to TARGET_FRAME_SPACING_M as the
+    length allows, never above MAX_FRAME_SPACING_M. Buildings no longer than
     a single bay collapse to 2 frames — the minimal '1x1 bay' enclosure."""
-    n_bays = max(1, round(length_ft / TARGET_FRAME_SPACING_FT))
-    while length_ft / n_bays > MAX_FRAME_SPACING_FT:
+    n_bays = max(1, round(length_m / TARGET_FRAME_SPACING_M))
+    while length_m / n_bays > MAX_FRAME_SPACING_M:
         n_bays += 1
     return n_bays + 1
 
 
-def derive_purlin_spacing_ft(span_ft: float) -> float:
-    """Target purlin spacing: TARGET_PURLIN_SPACING_FT, unless the span is so
+def derive_purlin_spacing_m(span_m: float) -> float:
+    """Target purlin spacing: TARGET_PURLIN_SPACING_M, unless the span is so
     short that the minimum of two purlin spaces forces it smaller."""
-    return min(TARGET_PURLIN_SPACING_FT, span_ft / 2.0)
+    return min(TARGET_PURLIN_SPACING_M, span_m / 2.0)
 
 
-def derive_end_wall_columns(span_ft: float, has_end_girder_group: bool) -> int:
+def derive_end_wall_columns(span_m: float, has_end_girder_group: bool) -> int:
     """Gable columns per end wall so no end-girder segment exceeds
-    MAX_END_GIRDER_SEGMENT_FT. Zero when one segment covers the span, or when
+    MAX_END_GIRDER_SEGMENT_M. Zero when one segment covers the span, or when
     no separate end-girder group exists — without a lighter end-girder group
     gable columns cannot pay off (see ClearSpanConfig.__post_init__)."""
     if not has_end_girder_group:
         return 0
-    return max(0, math.ceil(span_ft / MAX_END_GIRDER_SEGMENT_FT) - 1)
+    return max(0, math.ceil(span_m / MAX_END_GIRDER_SEGMENT_M) - 1)
 
 
 def candidate_layouts(config: "ClearSpanConfig") -> list[tuple[int, float, int]]:
-    """Realistic (n_frames, purlin_spacing_ft, end_wall_columns) combinations
+    """Realistic (n_frames, purlin_spacing_m, end_wall_columns) combinations
     for the footprint — the search space of optimize_layout(). Every spacing
     stays inside the practice bands above. Layout fields the user pinned to an
     explicit value contribute exactly that value; auto-derived fields range
     over their band."""
     if "n_frames" in config.auto_layout_fields:
-        n_lo = max(1, math.ceil(config.length_ft / MAX_FRAME_SPACING_FT))
-        n_hi = max(n_lo, math.floor(config.length_ft / MIN_FRAME_SPACING_FT))
+        n_lo = max(1, math.ceil(config.length_m / MAX_FRAME_SPACING_M))
+        n_hi = max(n_lo, math.floor(config.length_m / MIN_FRAME_SPACING_M))
         frame_opts = [n + 1 for n in range(n_lo, n_hi + 1)]
     else:
         frame_opts = [config.n_frames]
 
-    if "purlin_spacing_ft" in config.auto_layout_fields:
+    if "purlin_spacing_m" in config.auto_layout_fields:
         # dedupe targets that round to the same purlin-space count
         by_spaces: dict[int, float] = {}
-        for target in (TARGET_PURLIN_SPACING_FT, MIN_PURLIN_SPACING_FT,
-                       MAX_PURLIN_SPACING_FT):
-            t = min(target, config.span_ft / 2.0)
-            by_spaces.setdefault(max(2, round(config.span_ft / t)), t)
+        for target in (TARGET_PURLIN_SPACING_M, MIN_PURLIN_SPACING_M,
+                       MAX_PURLIN_SPACING_M):
+            t = min(target, config.span_m / 2.0)
+            by_spaces.setdefault(max(2, round(config.span_m / t)), t)
         purlin_opts = list(by_spaces.values())
     else:
-        purlin_opts = [config.purlin_spacing_ft]
+        purlin_opts = [config.purlin_spacing_m]
 
     if "end_wall_columns" in config.auto_layout_fields:
         if config.has_end_girder_group:
-            k_lo = max(0, math.ceil(config.span_ft / MAX_END_GIRDER_SEGMENT_FT) - 1)
-            k_hi = max(k_lo, math.floor(config.span_ft / MIN_END_GIRDER_SEGMENT_FT) - 1)
+            k_lo = max(0, math.ceil(config.span_m / MAX_END_GIRDER_SEGMENT_M) - 1)
+            k_hi = max(k_lo, math.floor(config.span_m / MIN_END_GIRDER_SEGMENT_M) - 1)
             gable_opts = sorted({0, *range(k_lo, k_hi + 1)})
         else:
             gable_opts = [0]
@@ -153,13 +156,13 @@ class ClearSpanConfig:
     # end_wall_columns > 0, where the benefit is largest)
     end_girder_candidates: list[str] | None = None
 
-    # --- building footprint (ft) — the geometric inputs ---
-    # Orientation is normalized on construction: if span_ft > length_ft the
+    # --- building footprint (m) — the geometric inputs ---
+    # Orientation is normalized on construction: if span_m > length_m the
     # two are swapped so girders always clear-span the shorter plan
     # dimension (see __post_init__).
-    span_ft: float = 65.0        # clear span, girder direction (no interior columns)
-    length_ft: float = 98.0      # building length
-    eave_height_ft: float = 30.0
+    span_m: float = 20.0         # clear span, girder direction (no interior columns)
+    length_m: float = 30.0       # building length
+    eave_height_m: float = 9.0
 
     # --- layout — derived from the footprint, NOT user inputs ---
     # Leave these as None (the default): __post_init__ derives realistic
@@ -168,26 +171,26 @@ class ClearSpanConfig:
     # design. Setting one explicitly pins it (intended for tests and
     # validation studies, not for normal use).
     n_frames: int | None = None          # transverse frame lines incl. both ends (>= 2)
-    purlin_spacing_ft: float | None = None   # target; actual = span_ft / n_purlin_spaces
+    purlin_spacing_m: float | None = None   # target; actual = span_m / n_purlin_spaces
     end_wall_columns: int | None = None  # interior gable columns per end wall
                                          # (exterior walls only — the clear
                                          # span stays clear)
 
-    # --- gravity loads (psf over the roof plan) ---
-    superimposed_dead_psf: float = 0.0   # deck + insulation + collateral
-    live_psf: float = 0.0                # governing roof live (Lr) or snow
+    # --- gravity loads (kPa = kN/m^2 over the roof plan) ---
+    superimposed_dead_kpa: float = 0.0   # deck + insulation + collateral
+    live_kpa: float = 0.0                # governing roof live (Lr) or snow
 
-    # --- material (default ASTM A992) ---
-    Fy_ksi: float = 50.0
-    Fu_ksi: float = 65.0
-    E_ksi: float = 29000.0
+    # --- material, MPa (default ASTM A992: Fy 345, Fu 450, E 200 GPa) ---
+    Fy_mpa: float = 345.0
+    Fu_mpa: float = 450.0
+    E_mpa: float = 200000.0
 
     # --- design options ---
-    girder_Lb_ft: float | None = None   # None -> actual purlin spacing (purlins
+    girder_Lb_m: float | None = None    # None -> actual purlin spacing (purlins
                                         # brace the girder compression flange)
-    purlin_Lb_ft: float | None = None   # None -> full purlin span (conservative);
+    purlin_Lb_m: float | None = None    # None -> full purlin span (conservative);
                                         # 0 = through-fastened deck braces top flange
-    girder_camber_in: float = 0.0       # fabrication camber on interior girders,
+    girder_camber_mm: float = 0.0       # fabrication camber on interior girders,
                                         # credited against total-load deflection
                                         # only (keep <= the dead-load deflection)
     check_deflection: bool = True
@@ -207,29 +210,29 @@ class ClearSpanConfig:
                 raise ValueError(f"{name} must be non-empty.")
         if self.end_girder_candidates is not None and not self.end_girder_candidates:
             raise ValueError("end_girder_candidates must be non-empty when given.")
-        if self.span_ft <= 0 or self.length_ft <= 0 or self.eave_height_ft <= 0:
-            raise ValueError("span_ft, length_ft, and eave_height_ft must be positive.")
+        if self.span_m <= 0 or self.length_m <= 0 or self.eave_height_m <= 0:
+            raise ValueError("span_m, length_m, and eave_height_m must be positive.")
 
         # Girders always clear-span the SHORTER plan dimension: girder moment
         # grows with span^2 (deflection with span^4), while purlins, columns,
         # and the clear interior are orientation-agnostic — so spanning the
         # long way is never lighter, and the swap is just the framing plan
         # rotated 90 degrees on the same footprint. Normalize automatically.
-        self._footprint_swapped = self.span_ft > self.length_ft
+        self._footprint_swapped = self.span_m > self.length_m
         if self._footprint_swapped:
-            self.span_ft, self.length_ft = self.length_ft, self.span_ft
+            self.span_m, self.length_m = self.length_m, self.span_m
 
         # Layout fields left as None are derived from the footprint; remember
         # which ones so optimize_layout() knows its free search variables.
         self._auto_layout = frozenset(
             name for name in _LAYOUT_FIELDS if getattr(self, name) is None)
         if self.n_frames is None:
-            self.n_frames = derive_n_frames(self.length_ft)
-        if self.purlin_spacing_ft is None:
-            self.purlin_spacing_ft = derive_purlin_spacing_ft(self.span_ft)
+            self.n_frames = derive_n_frames(self.length_m)
+        if self.purlin_spacing_m is None:
+            self.purlin_spacing_m = derive_purlin_spacing_m(self.span_m)
         if self.end_wall_columns is None:
             self.end_wall_columns = derive_end_wall_columns(
-                self.span_ft, self.has_end_girder_group)
+                self.span_m, self.has_end_girder_group)
 
         if self.end_wall_columns and self.end_girder_candidates is None:
             raise ValueError(
@@ -239,14 +242,14 @@ class ClearSpanConfig:
             )
         if self.n_frames < 2:
             raise ValueError("n_frames must be >= 2 (both end walls need a frame).")
-        if not (0.0 < self.purlin_spacing_ft <= self.span_ft / 2.0):
-            raise ValueError("purlin_spacing_ft must be in (0, span_ft/2].")
+        if not (0.0 < self.purlin_spacing_m <= self.span_m / 2.0):
+            raise ValueError("purlin_spacing_m must be in (0, span_m/2].")
         if self.end_wall_columns < 0:
             raise ValueError("end_wall_columns must be >= 0.")
-        if self.superimposed_dead_psf < 0 or self.live_psf < 0:
+        if self.superimposed_dead_kpa < 0 or self.live_kpa < 0:
             raise ValueError("Loads must be non-negative.")
-        if self.girder_camber_in < 0:
-            raise ValueError("girder_camber_in must be >= 0.")
+        if self.girder_camber_mm < 0:
+            raise ValueError("girder_camber_mm must be >= 0.")
 
     # --- derived geometry ---
     @property
@@ -256,16 +259,16 @@ class ClearSpanConfig:
         return self._auto_layout
 
     @property
-    def frame_spacing_ft(self) -> float:
-        return self.length_ft / (self.n_frames - 1)
+    def frame_spacing_m(self) -> float:
+        return self.length_m / (self.n_frames - 1)
 
     @property
     def n_purlin_spaces(self) -> int:
-        return max(2, round(self.span_ft / self.purlin_spacing_ft))
+        return max(2, round(self.span_m / self.purlin_spacing_m))
 
     @property
-    def purlin_spacing_actual_ft(self) -> float:
-        return self.span_ft / self.n_purlin_spaces
+    def purlin_spacing_actual_m(self) -> float:
+        return self.span_m / self.n_purlin_spaces
 
     @property
     def has_end_girder_group(self) -> bool:
@@ -284,17 +287,17 @@ class ClearSpanConfig:
     def describe(self) -> list[str]:
         gable = (f", {self.end_wall_columns} gable column(s)/end wall"
                  if self.end_wall_columns else "")
-        camber = (f", girder camber {self.girder_camber_in} in"
-                  if self.girder_camber_in else "")
+        camber = (f", girder camber {self.girder_camber_mm:.0f} mm"
+                  if self.girder_camber_mm else "")
         lines = [
-            f"Frame:  clear span {self.span_ft:.1f} ft x length {self.length_ft:.1f} ft, "
-            f"{self.n_frames} frames @ {self.frame_spacing_ft:.1f} ft, "
-            f"eave {self.eave_height_ft:.1f} ft (NO interior columns{gable})",
-            f"Roof:   purlins @ {self.purlin_spacing_actual_ft:.2f} ft "
+            f"Frame:  clear span {self.span_m:.1f} m x length {self.length_m:.1f} m, "
+            f"{self.n_frames} frames @ {self.frame_spacing_m:.2f} m, "
+            f"eave {self.eave_height_m:.1f} m (NO interior columns{gable})",
+            f"Roof:   purlins @ {self.purlin_spacing_actual_m:.2f} m "
             f"({self.n_purlin_spaces + 1} lines), one-way deck -> purlin -> girder"
             f"{camber}",
-            f"Loads:  SDL = {self.superimposed_dead_psf} psf, "
-            f"roof L/S = {self.live_psf} psf (1.4D, 1.2D+1.6L) + self-weight",
+            f"Loads:  SDL = {self.superimposed_dead_kpa} kPa, "
+            f"roof L/S = {self.live_kpa} kPa (1.4D, 1.2D+1.6L) + self-weight",
         ]
         if self._auto_layout:
             lines.append(
@@ -312,7 +315,7 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
 
     Girders default to Lb = the actual purlin spacing (each purlin line is a
     top-flange brace point under gravity); purlins default to the conservative
-    full-span Lb unless the deck attachment justifies purlin_Lb_ft = 0. All
+    full-span Lb unless the deck attachment justifies purlin_Lb_m = 0. All
     flexural groups are gravity-loaded simple spans, so the single-unbraced-
     segment Cb of 12.5/11 (AISC F1-1, parabolic diagram) applies when unbraced.
     """
@@ -324,14 +327,14 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
     p_live = ratio(config.purlin_defl_live_ratio, config.defl_live_ratio)
     p_total = ratio(config.purlin_defl_total_ratio, config.defl_total_ratio)
 
-    sp_in = config.purlin_spacing_actual_ft * FT
-    girder_Lb = sp_in if config.girder_Lb_ft is None else config.girder_Lb_ft * FT
+    sp_in = config.purlin_spacing_actual_m * M_TO_IN
+    girder_Lb = sp_in if config.girder_Lb_m is None else config.girder_Lb_m * M_TO_IN
     girder_rules = GroupRules(
         Lb_in=girder_Lb,
         check_deflection=config.check_deflection,
         defl_live_ratio=g_live, defl_total_ratio=g_total,
         Cb_simple_span=True,
-        camber_in=config.girder_camber_in,
+        camber_in=config.girder_camber_mm * MM_TO_IN,
     )
     rules = {
         COLUMN: GroupRules(
@@ -340,7 +343,7 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
         ),
         GIRDER: girder_rules,
         PURLIN: GroupRules(
-            Lb_in=None if config.purlin_Lb_ft is None else config.purlin_Lb_ft * FT,
+            Lb_in=None if config.purlin_Lb_m is None else config.purlin_Lb_m * M_TO_IN,
             check_deflection=config.check_deflection,
             defl_live_ratio=p_live, defl_total_ratio=p_total,
             Cb_simple_span=True,
@@ -355,14 +358,13 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
             defl_live_ratio=g_live, defl_total_ratio=g_total,
             Cb_simple_span=True,
         )
-    return CheckParams(Fy=config.Fy_ksi, Fu=config.Fu_ksi, E=config.E_ksi,
-                       group_rules=rules)
+    return CheckParams.from_material(config, group_rules=rules)
 
 
 def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
-    span = config.span_ft * FT
-    height = config.eave_height_ft * FT
-    s_f = config.frame_spacing_ft * FT
+    span = config.span_m * M_TO_IN
+    height = config.eave_height_m * M_TO_IN
+    s_f = config.frame_spacing_m * M_TO_IN
     n_sp = config.n_purlin_spaces
     sp = span / n_sp
     nf = config.n_frames

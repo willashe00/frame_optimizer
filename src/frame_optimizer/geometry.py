@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import BEAM, COLUMN, FT, FrameConfig
+from .config import BEAM, COLUMN, M_TO_IN, FrameConfig
 
 GROUPS = (COLUMN, BEAM)   # groups of the conventional grid frame
 
@@ -64,9 +64,9 @@ def _node_name(ix: int, iz: int, level: int) -> str:
 
 
 def build_geometry(config: FrameConfig) -> FrameGeometry:
-    sx = config.x_bay_spacing_ft * FT
-    sz = config.z_bay_spacing_ft * FT
-    heights = [h * FT for h in config.story_heights_ft]
+    sx = config.x_bay_spacing_m * M_TO_IN
+    sz = config.z_bay_spacing_m * M_TO_IN
+    heights = [h * M_TO_IN for h in config.story_heights_m]
     levels_y = [0.0]
     for h in heights:
         levels_y.append(levels_y[-1] + h)

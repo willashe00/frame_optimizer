@@ -11,10 +11,12 @@ Two machine-readable views of the optimized structure:
                              per design group with profile dimensions, loads,
                              material, and headline optimization results.
 
-Every numeric key carries an explicit unit suffix (_in, _ft, _kip, _psf,
-_ksi, _lb, _plf) so downstream consumers never have to guess. Baseplate
+Every numeric key carries an explicit SI unit suffix (_mm, _m, _kN, _kPa,
+_MPa, _kg, _kg_m) so downstream consumers never have to guess. Baseplate
 reactions come from one extra FEA solve of the final assignment (linear
 analysis, so service 'D' is recovered exactly as (D+L) - L).
+
+schema_version 2: all quantities converted from US customary to SI.
 """
 from __future__ import annotations
 
@@ -25,13 +27,15 @@ from .analysis import build_model
 from .analysis.frame_model import (SERVICE_LIVE_COMBO, SERVICE_TOTAL_COMBO,
                                    STRENGTH_COMBOS)
 from .clear_span import ClearSpanConfig
-from .config import COLUMN, FrameConfig
+from .config import COLUMN, IN_TO_MM, KIP_TO_KN, PLF_TO_KG_M, FrameConfig
 from .geometry import FrameGeometry, MemberInfo, NodeInfo
 from .optimization import geometry_for
 from .results import OptimizationResult
 from .sections import WShape, get_shapes
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+
+_IN2_TO_MM2 = IN_TO_MM ** 2
 
 
 def _r(value: float, ndigits: int = 4) -> float:
@@ -53,16 +57,17 @@ def _assignment(result: OptimizationResult) -> dict[str, WShape]:
 
 
 def _section_dimensions(shape: WShape) -> dict:
-    """The profile dimensions downstream geometry consumers need."""
+    """The profile dimensions downstream geometry consumers need (SI; the
+    name stays the AISC Manual label, which is an identifier, not a unit)."""
     return {
         "name": shape.name,
         "profile_type": "W-shape (AISC)",
-        "depth_d_in": _r(shape.d),
-        "flange_width_bf_in": _r(shape.bf),
-        "flange_thickness_tf_in": _r(shape.tf),
-        "web_thickness_tw_in": _r(shape.tw),
-        "area_in2": _r(shape.A),
-        "nominal_weight_plf": _r(shape.weight_plf),
+        "depth_d_mm": _r(shape.d * IN_TO_MM, 2),
+        "flange_width_bf_mm": _r(shape.bf * IN_TO_MM, 2),
+        "flange_thickness_tf_mm": _r(shape.tf * IN_TO_MM, 2),
+        "web_thickness_tw_mm": _r(shape.tw * IN_TO_MM, 2),
+        "area_mm2": _r(shape.A * _IN2_TO_MM2, 1),
+        "nominal_weight_kg_m": _r(shape.weight_plf * PLF_TO_KG_M, 2),
     }
 
 
@@ -75,16 +80,18 @@ def _base_columns(geometry: FrameGeometry) -> list[tuple[MemberInfo, NodeInfo]]:
 
 def _base_reactions_fy(result: OptimizationResult, geometry: FrameGeometry,
                        assignment: dict[str, WShape]) -> dict[str, dict[str, float]]:
-    """Vertical base reaction (kip, compression-positive) per node per combo.
+    """Vertical base reaction (kN, compression-positive) per node per combo.
 
     One linear solve of the final assignment; RxnFY is positive upward, i.e.
     equal to the axial compression the column delivers to the baseplate.
+    (This is the one solve that needs Pynite's reaction recovery, so it uses
+    the public analyze().)
     """
     model = build_model(geometry, assignment, result.config)
     model.analyze(check_stability=True, check_statics=False, sparse=True)
     combos = list(STRENGTH_COMBOS) + [SERVICE_TOTAL_COMBO[0], SERVICE_LIVE_COMBO[0]]
     return {
-        node.name: {c: model.nodes[node.name].RxnFY[c] for c in combos}
+        node.name: {c: model.nodes[node.name].RxnFY[c] * KIP_TO_KN for c in combos}
         for node in geometry.nodes if node.is_base
     }
 
@@ -113,10 +120,12 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
             "base_node": base.name,
             "section": _section_dimensions(assignment[member.group]),
             "centerline_location": {
-                "x_in": _r(base.x), "y_in": _r(base.y), "z_in": _r(base.z),
+                "x_mm": _r(base.x * IN_TO_MM, 1),
+                "y_mm": _r(base.y * IN_TO_MM, 1),
+                "z_mm": _r(base.z * IN_TO_MM, 1),
             },
-            "column_height_in": _r(member.length_in),
-            "axial_compression_kip": {
+            "column_height_mm": _r(member.length_in * IN_TO_MM, 1),
+            "axial_compression_kN": {
                 "Pu_governing_lrfd": _r(max(rxn[c] for c in strength_combos)),
                 "by_combo": by_combo,
             },
@@ -126,9 +135,9 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
         "schema": "frame_optimizer/baseplate_inputs",
         "schema_version": _SCHEMA_VERSION,
         "base_condition": "pinned",
-        "units": {"length": "in", "force": "kip", "stress": "ksi"},
+        "units": {"length": "mm", "force": "kN", "stress": "MPa"},
         "sign_convention": (
-            "axial_compression_kip values are vertical base reactions, "
+            "axial_compression_kN values are vertical base reactions, "
             "positive in compression (bearing on the baseplate)"
         ),
         "notes": [
@@ -141,9 +150,9 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
             "gravity model; all sections are vertical W-shapes.",
         ],
         "material": {
-            "Fy_ksi": _r(config.Fy_ksi),
-            "Fu_ksi": _r(config.Fu_ksi),
-            "E_ksi": _r(config.E_ksi),
+            "Fy_MPa": _r(config.Fy_mpa),
+            "Fu_MPa": _r(config.Fu_mpa),
+            "E_MPa": _r(config.E_mpa),
         },
         "columns": columns,
     }
@@ -157,25 +166,25 @@ def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
             "description": ("transverse clear-span frames, no interior "
                             "columns; one-way deck -> purlins -> girders "
                             "-> perimeter columns"),
-            "span_ft": _r(config.span_ft),
-            "length_ft": _r(config.length_ft),
-            "eave_height_ft": _r(config.eave_height_ft),
+            "span_m": _r(config.span_m),
+            "length_m": _r(config.length_m),
+            "eave_height_m": _r(config.eave_height_m),
             "n_frames": config.n_frames,
-            "frame_spacing_ft": _r(config.frame_spacing_ft),
+            "frame_spacing_m": _r(config.frame_spacing_m),
             "n_purlin_lines": config.n_purlin_spaces + 1,
-            "purlin_spacing_ft": _r(config.purlin_spacing_actual_ft),
+            "purlin_spacing_m": _r(config.purlin_spacing_actual_m),
             "end_wall_columns_per_end": config.end_wall_columns,
-            "girder_camber_in": _r(config.girder_camber_in),
+            "girder_camber_mm": _r(config.girder_camber_mm, 1),
         }
     return {
         "building_type": "grid_frame",
         "description": "conventional column grid, one-way deck on floor beams",
         "x_bays": config.x_bays,
-        "x_bay_spacing_ft": _r(config.x_bay_spacing_ft),
+        "x_bay_spacing_m": _r(config.x_bay_spacing_m),
         "z_bays": config.z_bays,
-        "z_bay_spacing_ft": _r(config.z_bay_spacing_ft),
+        "z_bay_spacing_m": _r(config.z_bay_spacing_m),
         "stories": config.stories,
-        "story_heights_ft": [_r(h) for h in config.story_heights_ft],
+        "story_heights_m": [_r(h) for h in config.story_heights_m],
         "deck_span_direction": config.deck_span_direction,
     }
 
@@ -193,14 +202,16 @@ def building_configuration(result: OptimizationResult) -> dict:
         design_groups[group] = {
             "section": _section_dimensions(shape),
             "n_members": int(row["n_members"]),
-            "weight_lb": _r(row["weight_lb"], 1),
+            "weight_kg": _r(row["weight_kg"], 1),
             "max_unity_check": _r(row["max_uc"]),
             "governing_limit_state": row["governing_limitstate"],
         }
 
     nodes = [{
         "name": n.name,
-        "x_in": _r(n.x), "y_in": _r(n.y), "z_in": _r(n.z),
+        "x_mm": _r(n.x * IN_TO_MM, 1),
+        "y_mm": _r(n.y * IN_TO_MM, 1),
+        "z_mm": _r(n.z * IN_TO_MM, 1),
         "is_base": n.is_base,
     } for n in geometry.nodes]
 
@@ -210,13 +221,14 @@ def building_configuration(result: OptimizationResult) -> dict:
         "section": assignment[m.group].name,
         "i_node": m.i_node,
         "j_node": m.j_node,
-        "length_in": _r(m.length_in),
+        "length_mm": _r(m.length_in * IN_TO_MM, 1),
     } for m in geometry.members]
 
     return {
         "schema": "frame_optimizer/building_configuration",
         "schema_version": _SCHEMA_VERSION,
-        "units": {"length": "in", "plan_dimensions": "ft", "weight": "lb"},
+        "units": {"length": "mm", "plan_dimensions": "m", "weight": "kg",
+                  "load": "kPa", "stress": "MPa"},
         "coordinate_system": {
             "x": "plan (clear-span/girder direction for clear_span buildings)",
             "y": "vertical, up (gravity acts in -y)",
@@ -225,14 +237,14 @@ def building_configuration(result: OptimizationResult) -> dict:
         },
         "building": _building_block(config),
         "material": {
-            "standard": "ASTM A992 defaults" if config.Fy_ksi == 50.0 else "user-specified",
-            "Fy_ksi": _r(config.Fy_ksi),
-            "Fu_ksi": _r(config.Fu_ksi),
-            "E_ksi": _r(config.E_ksi),
+            "standard": "ASTM A992 defaults" if config.Fy_mpa == 345.0 else "user-specified",
+            "Fy_MPa": _r(config.Fy_mpa),
+            "Fu_MPa": _r(config.Fu_mpa),
+            "E_MPa": _r(config.E_mpa),
         },
         "loads": {
-            "superimposed_dead_psf": _r(config.superimposed_dead_psf),
-            "live_psf": _r(config.live_psf),
+            "superimposed_dead_kPa": _r(config.superimposed_dead_kpa),
+            "live_kPa": _r(config.live_kpa),
             "self_weight": "included in analysis",
             "strength_combinations": list(STRENGTH_COMBOS),
             "lateral_loads": "out of scope (separate lateral system assumed)",
@@ -244,7 +256,7 @@ def building_configuration(result: OptimizationResult) -> dict:
         "optimization": {
             "feasible": bool(result.feasible),
             "converged": bool(result.converged),
-            "total_weight_lb": _r(result.total_weight_lb, 1),
+            "total_weight_kg": _r(result.total_weight_kg, 1),
         },
     }
 

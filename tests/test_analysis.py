@@ -1,6 +1,8 @@
 """FEA demands vs closed-form statics for a single-bay, single-story frame.
 
 Layout: 1 x-bay @ 30 ft, 1 z-bay @ 20 ft, one 12-ft story, deck spans z.
+Config inputs are the exact SI conversions of those imperial values, so the
+hand-calc anchors below stay in the backend's kip/inch system unchanged.
 All horizontal members share one 'beam' section (W18X35, 35 plf).
 Loaded beams (x-running, span 30 ft) are all on edge z-lines: tributary = 10 ft.
 Unloaded beams (z-running, span 20 ft, trib = 0) carry self-weight only.
@@ -16,12 +18,15 @@ Hand values (kips, ft):
 import pytest
 
 from frame_optimizer.analysis import analyze_frame
-from frame_optimizer.config import FrameConfig
+from frame_optimizer.config import FT_TO_M, FrameConfig
 from frame_optimizer.geometry import BEAM, COLUMN, build_geometry
 from frame_optimizer.sections import load_w_shapes
 
 CAT = load_w_shapes()
 E = 29000.0
+
+# exact psf -> kPa (1 psf = 1 lbf / ft^2)
+PSF_TO_KPA = 4.4482216152605 / 0.3048**2 / 1000.0
 
 
 @pytest.fixture(scope="module")
@@ -29,10 +34,11 @@ def demands():
     config = FrameConfig(
         beam_candidates=["W18X35"],
         column_candidates=["W10X33"],
-        x_bays=1, x_bay_spacing_ft=30.0,
-        z_bays=1, z_bay_spacing_ft=20.0,
-        stories=1, story_height_ft=12.0,
-        superimposed_dead_psf=20.0, live_psf=50.0,
+        x_bays=1, x_bay_spacing_m=30.0 * FT_TO_M,
+        z_bays=1, z_bay_spacing_m=20.0 * FT_TO_M,
+        stories=1, story_height_m=12.0 * FT_TO_M,
+        superimposed_dead_kpa=20.0 * PSF_TO_KPA,
+        live_kpa=50.0 * PSF_TO_KPA,
         deck_span_direction="z",
     )
     geometry = build_geometry(config)

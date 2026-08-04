@@ -8,13 +8,16 @@ carry the one-way roof deck.
 Only the building footprint (span, length, eave height) is a geometric input.
 The layout — frame count, purlin spacing, and gable columns per end wall — is
 determined by optimize_layout(): it searches the realistic layout band for the
-footprint (bays ~20-30 ft, purlins ~4-6 ft, end-girder segments <= ~25 ft) and
+footprint (bays ~6-9 m, purlins ~1.2-1.8 m, end-girder segments <= ~7.6 m) and
 keeps the lightest feasible design. A footprint no longer than one bay
 naturally collapses to a minimal 1x1-bay enclosure (2 frames, no gables).
+
+All inputs and outputs are SI: meters, kPa (kN/m^2), MPa, millimeters;
+results report kN, kN*m, and kg.
 """
 from pathlib import Path
 
-from frame_optimizer import (ClearSpanConfig, M_TO_FT, optimize_layout,
+from frame_optimizer import (ClearSpanConfig, optimize_layout,
                              write_baseplate_json, write_building_json)
 
 # all files produced by this script land here (git-ignored)
@@ -49,22 +52,22 @@ config = ClearSpanConfig(
 
 
     # ------- building footprint (configure these ONLY) -------
-    span_ft=25.0 * M_TO_FT,      # clear span: girder direction
-    length_ft=35.0 * M_TO_FT,    # building length
-    eave_height_ft=30.0,         # clearance over the equipment
+    span_m=52.0,                 # clear span: girder direction
+    length_m=57.0,               # building length
+    eave_height_m=43.5,          # clearance over the equipment
 
 
     # ------- Other inputs (defaults) -------
 
     # ------- gravity loads -------
-    superimposed_dead_psf=15.0,  # roof deck + insulation + collateral (MEP etc.)
-    live_psf=25.0,               # governing of ASCE 7 roof live (Lr) and snow
+    superimposed_dead_kpa=0.72,  # roof deck + insulation + collateral (MEP etc.)
+    live_kpa=1.20,               # governing of ASCE 7 roof live (Lr) and snow
 
     # ------- optional design settings (defaults shown unless noted) -------
-    Fy_ksi=50.0, Fu_ksi=65.0, E_ksi=29000.0,   # ASTM A992
-    girder_Lb_ft=None,           # None = braced at every purlin (the default)
-    purlin_Lb_ft=0.0,            # steel deck braces the top flange
-    girder_camber_in=1.0,        # shop camber on the interior girders; credited
+    Fy_mpa=345.0, Fu_mpa=450.0, E_mpa=200000.0,   # ASTM A992
+    girder_Lb_m=None,            # None = braced at every purlin (the default)
+    purlin_Lb_m=0.0,             # steel deck braces the top flange
+    girder_camber_mm=25.0,       # shop camber on the interior girders; credited
                                  # against the total-deflection check only
     check_deflection=True,       # L/360 live, L/240 total (floor-strict values;
                                  # relax via girder_/purlin_defl_*_ratio when

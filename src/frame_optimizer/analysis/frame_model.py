@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from Pynite import FEModel3D
 
-from ..config import PLF_TO_KIP_PER_IN, FrameConfig
+from ..config import KPA_TO_KSI, MPA_TO_KSI, PLF_TO_KIP_PER_IN, FrameConfig
 from ..geometry import FrameGeometry
 from ..sections import WShape
 
@@ -63,16 +63,17 @@ class MemberDemand:
     defl_live_in: float   # under L
 
 
-def _line_load_kip_in(psf: float, trib_width_in: float) -> float:
-    """psf x tributary width -> kip/in. (psf * ft = plf; trib is stored in inches.)"""
-    return psf * (trib_width_in / 12.0) * PLF_TO_KIP_PER_IN
+def _line_load_kip_in(kpa: float, trib_width_in: float) -> float:
+    """kPa x tributary width -> kip/in. (kPa converts to ksi = kip/in^2, so
+    multiplying by the tributary width in inches gives kip/in directly.)"""
+    return kpa * KPA_TO_KSI * trib_width_in
 
 
 def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
                 config: FrameConfig) -> FEModel3D:
     """Assemble the Pynite model for one {group: shape} assignment."""
     model = FEModel3D()
-    E, nu = config.E_ksi, 0.3
+    E, nu = config.E_mpa * MPA_TO_KSI, 0.3
     model.add_material("steel", E, E / (2.0 * (1.0 + nu)), nu, STEEL_DENSITY_KCI)
 
     for group, shape in assignment.items():
@@ -98,9 +99,9 @@ def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
 
         shape = assignment[m.group]
         w_self = shape.weight_plf * PLF_TO_KIP_PER_IN
-        w_dead = w_self + _line_load_kip_in(config.superimposed_dead_psf, m.trib_width_in)
+        w_dead = w_self + _line_load_kip_in(config.superimposed_dead_kpa, m.trib_width_in)
         model.add_member_dist_load(m.name, "FY", -w_dead, -w_dead, case="D")
-        w_live = _line_load_kip_in(config.live_psf, m.trib_width_in)
+        w_live = _line_load_kip_in(config.live_kpa, m.trib_width_in)
         if w_live > 0.0:
             model.add_member_dist_load(m.name, "FY", -w_live, -w_live, case="L")
 
@@ -180,9 +181,45 @@ def extract_demands(model: FEModel3D, geometry: FrameGeometry,
     return demands
 
 
+def solve_model(model: FEModel3D, check_stability: bool = True) -> None:
+    """First-order solve of every load combination WITHOUT reaction recovery.
+
+    Pynite's public analyze() spends ~40% of its time in _calc_reactions,
+    but the optimizer only reads member results (forces, deflections), never
+    reactions — so the screening loop skips that step entirely. Member
+    results are identical to analyze(): reactions are recovered FROM the
+    solved displacements, not the other way around. Callers that do need
+    reactions (the baseplate export) use model.analyze() directly.
+
+    Mirrors FEModel3D.analyze(sparse=True); if Pynite's internal API ever
+    changes, falls back to the public analyze().
+    """
+    try:
+        from Pynite import Analysis
+        Analysis._prepare_model(model)
+        combos = Analysis._identify_combos(model, None)
+        D1_indices, D2_indices, D2 = Analysis._partition_D(model)
+        for combo in combos:
+            FER1, _ = Analysis._partition(model, model.FER(combo.name),
+                                          D1_indices, D2_indices)
+            P1, _ = Analysis._partition(model, model.P(combo.name),
+                                        D1_indices, D2_indices)
+            Analysis._first_order(model, combo.name, P1, FER1, D1_indices,
+                                  D2_indices, D2, log=False, sparse=True,
+                                  check_stability=check_stability)
+    except (ImportError, AttributeError, TypeError):
+        model.analyze(check_stability=check_stability, check_statics=False,
+                      sparse=True)
+
+
 def analyze_frame(geometry: FrameGeometry, assignment: dict[str, WShape],
-                  config: FrameConfig) -> list[MemberDemand]:
-    """Build, solve, and extract demands for one candidate assignment."""
+                  config: FrameConfig,
+                  check_stability: bool = True) -> list[MemberDemand]:
+    """Build, solve, and extract demands for one candidate assignment.
+
+    check_stability=False skips Pynite's singularity scan; safe when the
+    same geometry has already solved cleanly once (stability depends on the
+    support/release topology, not on which W-shapes are assigned)."""
     model = build_model(geometry, assignment, config)
-    model.analyze(check_stability=True, check_statics=False, sparse=True)
+    solve_model(model, check_stability=check_stability)
     return extract_demands(model, geometry, assignment)

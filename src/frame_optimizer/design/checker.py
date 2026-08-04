@@ -11,7 +11,8 @@ from dataclasses import dataclass
 import pandas as pd
 
 from ..analysis import MemberDemand
-from ..config import BEAM, COLUMN, FT, FrameConfig
+from ..config import (BEAM, COLUMN, IN_TO_M, KIP_IN_TO_KNM, KIP_TO_KN,
+                      M_TO_IN, MPA_TO_KSI, FrameConfig)
 from ..sections import WShape
 from . import aisc_strengths as st
 
@@ -68,10 +69,24 @@ class GroupRules:
 
 @dataclass(frozen=True)
 class CheckParams:
+    """Material (internal ksi) + per-group design rules. Built from an SI
+    config via from_material()/from_config(); the strength equations run in
+    the AISC-native kip/inch system."""
     Fy: float
     Fu: float
     E: float
     group_rules: dict[str, GroupRules]
+
+    @classmethod
+    def from_material(cls, config, group_rules: dict[str, GroupRules]) -> "CheckParams":
+        """Convert any config's SI material (MPa) to internal ksi and attach
+        the given per-group rules."""
+        return cls(
+            Fy=config.Fy_mpa * MPA_TO_KSI,
+            Fu=config.Fu_mpa * MPA_TO_KSI,
+            E=config.E_mpa * MPA_TO_KSI,
+            group_rules=group_rules,
+        )
 
     @classmethod
     def from_config(cls, config: FrameConfig) -> "CheckParams":
@@ -79,7 +94,7 @@ class CheckParams:
         long-standing behavior: beams may credit deck bracing and carry the
         deflection checks; columns carry the KL/r limit."""
         beam_rules = GroupRules(
-            Lb_in=None if config.beam_Lb_ft is None else config.beam_Lb_ft * FT,
+            Lb_in=None if config.beam_Lb_m is None else config.beam_Lb_m * M_TO_IN,
             check_deflection=config.check_deflection,
             defl_live_ratio=config.defl_live_ratio,
             defl_total_ratio=config.defl_total_ratio,
@@ -90,12 +105,8 @@ class CheckParams:
             check_deflection=False,   # columns: no sag check (they report 0 anyway)
             check_slenderness=config.enforce_slenderness_limit,
         )
-        return cls(
-            Fy=config.Fy_ksi,
-            Fu=config.Fu_ksi,
-            E=config.E_ksi,
-            group_rules={COLUMN: column_rules, BEAM: beam_rules},
-        )
+        return cls.from_material(
+            config, group_rules={COLUMN: column_rules, BEAM: beam_rules})
 
     def rules_for(self, group: str) -> GroupRules:
         try:
@@ -174,23 +185,24 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
 
     governing_limit, governing_uc = max(ucs.items(), key=lambda kv: kv[1])
 
+    # demands/capacities are computed in kips and inches; report them in SI
     return {
         "member": demand.name,
         "group": demand.group,
         "story": demand.story,
         "profile": shape.name,
-        "length_ft": demand.length_in / FT,
-        "Pu_kip": demand.Pu,
-        "phiPn_kip": phi_Pn,
+        "length_m": demand.length_in * IN_TO_M,
+        "Pu_kN": demand.Pu * KIP_TO_KN,
+        "phiPn_kN": phi_Pn * KIP_TO_KN,
         "axial_clause": ax_clause,
-        "Mux_kipft": demand.Mux / FT,
-        "phiMnx_kipft": phi_Mnx / FT,
+        "Mux_kNm": demand.Mux * KIP_IN_TO_KNM,
+        "phiMnx_kNm": phi_Mnx * KIP_IN_TO_KNM,
         "Mx_clause": mx_clause,
-        "Muy_kipft": demand.Muy / FT,
-        "phiMny_kipft": phi_Mny / FT,
+        "Muy_kNm": demand.Muy * KIP_IN_TO_KNM,
+        "phiMny_kNm": phi_Mny * KIP_IN_TO_KNM,
         "My_clause": my_clause,
-        "Vu_kip": demand.Vu,
-        "phiVn_kip": phi_Vn,
+        "Vu_kN": demand.Vu * KIP_TO_KN,
+        "phiVn_kN": phi_Vn * KIP_TO_KN,
         "V_clause": v_clause,
         "H1_clause": h1_clause,
         **ucs,
