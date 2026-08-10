@@ -133,7 +133,7 @@ class ClearSpanConfig:
     # dimension (see __post_init__).
     span_m: float = 20.0         # clear span, girder direction (no interior columns)
     length_m: float = 30.0       # building length
-    eave_height_m: float = 9.0
+    height_m: float = 9.0
 
     # --- layout — derived from the footprint, NOT user inputs ---
     # Leave these as None (the default): __post_init__ derives realistic
@@ -219,8 +219,8 @@ class ClearSpanConfig:
                     "end frames keep gable-column-propped W end girders (a "
                     "truss on a propped wall line has no purpose)."
                 )
-        if self.span_m <= 0 or self.length_m <= 0 or self.eave_height_m <= 0:
-            raise ValueError("span_m, length_m, and eave_height_m must be positive.")
+        if self.span_m <= 0 or self.length_m <= 0 or self.height_m <= 0:
+            raise ValueError("span_m, length_m, and height_m must be positive.")
 
         # Girders always clear-span the SHORTER plan dimension: girder moment
         # grows with span^2 (deflection with span^4), while purlins, columns,
@@ -268,9 +268,9 @@ class ClearSpanConfig:
                 "gable-column-propped end girders already cover the span."
             )
         if self.has_truss_groups or self.roof_system == "truss":
-            if not (0.0 < self.truss_depth_actual_m < self.eave_height_m):
+            if not (0.0 < self.truss_depth_actual_m < self.height_m):
                 raise ValueError(
-                    "truss depth must be in (0, eave_height_m): the truss "
+                    "truss depth must be in (0, height_m): the truss "
                     "bears at the top chord and hangs below the eave."
                 )
             if (self.bottom_chord_brace_spacing_m is not None
@@ -375,7 +375,7 @@ class ClearSpanConfig:
         lines = [
             f"Frame:  clear span {self.span_m:.1f} m x length {self.length_m:.1f} m, "
             f"{self.n_frames} frames @ {self.frame_spacing_m:.2f} m, "
-            f"eave {self.eave_height_m:.1f} m (NO interior columns{gable})",
+            f"eave {self.height_m:.1f} m (NO interior columns{gable})",
             roof,
             f"Loads:  SDL = {self.superimposed_dead_kpa} kPa, "
             f"roof L/S = {self.live_kpa} kPa (1.4D, 1.2D+1.6L) + self-weight",
@@ -480,7 +480,7 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
 
 def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
     span = config.span_m * M_TO_IN
-    height = config.eave_height_m * M_TO_IN
+    height = config.height_m * M_TO_IN
     s_f = config.frame_spacing_m * M_TO_IN
     n_sp = config.n_purlin_spaces
     sp = span / n_sp

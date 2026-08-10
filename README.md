@@ -26,7 +26,7 @@ the AISC-native consistent kip/inch system; the exact conversion factors in
 boundary and once when reporting, so no mixed-unit arithmetic can occur.
 
 The only geometric inputs are the building **footprint**: `span_m`,
-`length_m`, `eave_height_m`. The frame layout is **derived**, not user-specified: `optimize_layout()`
+`length_m`, `height_m`. The frame layout is **derived**, not user-specified: `optimize_layout()`
 searches the realistic layout band for the footprint (bays ~6–9 m, purlins
 ~1.2–1.8 m, end-girder segments ≤ ~7.6 m) and keeps the lightest feasible
 design. A footprint no longer than one bay collapses to a minimal 1×1-bay

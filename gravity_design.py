@@ -10,14 +10,8 @@ bearing at the top chord on the same column tops, and the final design is
 re-verified with second-order (P-Delta) axial forces.
 
 Only the building footprint (span, length, eave height) is a geometric input.
-The layout — frame count, purlin spacing, and gable columns per end wall — is
-determined by optimize_layout(): it searches the realistic layout band for the
-footprint (bays ~6-9 m, purlins ~1.2-1.8 m, end-girder segments <= ~7.6 m) and
-keeps the lightest feasible design. A footprint no longer than one bay
-naturally collapses to a minimal 1x1-bay enclosure (2 frames, no gables).
 
-All inputs and outputs are SI: meters, kPa (kN/m^2), MPa, millimeters;
-results report kN, kN*m, and kg.
+All inputs and outputs are SI: meters
 """
 from pathlib import Path
 
@@ -28,8 +22,6 @@ from frame_optimizer import (ClearSpanConfig, optimize_layout,
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 # the "modeler" folder can be deleted once this module is inside Alchemy.
-# It also needs plotly, which the core package deliberately does not:
-# install with  pip install -e .[viz]  (or  pip install plotly)
 try:
     from modeler import visualize_result
     _viz_skip_reason = None
@@ -38,6 +30,16 @@ except ImportError as exc:
     _viz_skip_reason = exc
 
 config = ClearSpanConfig(
+    # ------- building footprint (the primary inputs) -------
+    span_m=52.0,                 # clear span: girder direction
+    length_m=57.0,               # building length
+    height_m=20.0,          # clearance over the equipment
+
+
+
+
+    # ------- Other inputs (defaults) -------
+
     # ------- candidate W-shapes (AISC Manual labels) -------
     girder_candidates=[
         "W24X76", "W27X84", "W30X90", "W30X99", "W30X108",
@@ -49,16 +51,12 @@ config = ClearSpanConfig(
     ],
     column_candidates=[
         "W10X33", "W10X39", "W12X40", "W12X53", "W14X61",
-        # the 20 m eave needs stocky heavy columns: pin-pin and unbraced,
-        # KL/r <= 200 alone demands ry >= ~4 in (girt bracing would lighten
-        # these, but lateral systems are out of this model's scope)
         "W14X145", "W14X176", "W14X211",
     ],
     end_girder_candidates=[
         "W12X16", "W14X22", "W16X26", "W18X35", "W21X44",
     ],
-    # ------- Pratt truss roof (engages automatically when no W girder can
-    # carry the span; roof_system defaults to "auto") -------
+    # ------- Pratt truss roof (engages automatically when no W girder works) -------
     top_chord_candidates=[
         "W12X40", "W12X53", "W12X65", "W14X61", "W14X82",
         "W14X99", "W14X109",
@@ -70,17 +68,6 @@ config = ClearSpanConfig(
     truss_web_candidates=[
         "W8X24", "W8X28", "W10X33", "W10X39", "W12X40", "W12X53",
     ],
-
-
-    # ------- building footprint (configure these ONLY) -------
-    span_m=52.0,                 # clear span: girder direction
-    length_m=57.0,               # building length
-    eave_height_m=20.0,          # clearance over the equipment
-
-
-
-
-    # ------- Other inputs (defaults) -------
 
     # ------- gravity loads -------
     superimposed_dead_kpa=0.72,  # roof deck + insulation + collateral (MEP etc.)

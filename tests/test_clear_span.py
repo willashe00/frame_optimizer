@@ -46,7 +46,7 @@ def cfg(**kw):
         purlin_candidates=["W8X10", "W12X16"],
         column_candidates=["W10X33", "W12X53"],
         span_m=50.0 * FT_TO_M, length_m=60.0 * FT_TO_M, n_frames=3,
-        eave_height_m=20.0 * FT_TO_M, purlin_spacing_m=5.0 * FT_TO_M,
+        height_m=20.0 * FT_TO_M, purlin_spacing_m=5.0 * FT_TO_M,
         superimposed_dead_kpa=15.0 * PSF_TO_KPA, live_kpa=25.0 * PSF_TO_KPA,
         purlin_Lb_m=0.0,
     )
@@ -66,7 +66,7 @@ def auto_cfg(**kw):
         purlin_candidates=["W8X10", "W12X16"],
         column_candidates=["W10X33", "W12X53"],
         span_m=50.0 * FT_TO_M, length_m=60.0 * FT_TO_M,
-        eave_height_m=20.0 * FT_TO_M,
+        height_m=20.0 * FT_TO_M,
         superimposed_dead_kpa=15.0 * PSF_TO_KPA, live_kpa=25.0 * PSF_TO_KPA,
         purlin_Lb_m=0.0,
     )
@@ -209,7 +209,7 @@ def test_footprint_orientation_normalized():
 
 def test_small_footprint_collapses_to_single_bay():
     config = auto_cfg(span_m=20.0 * FT_TO_M, length_m=24.0 * FT_TO_M,
-                      eave_height_m=16.0 * FT_TO_M)
+                      height_m=16.0 * FT_TO_M)
     assert (config.n_frames, config.end_wall_columns) == (2, 0)
     geo = build_clear_span_geometry(config)
     assert len(geo.members_in_group(GIRDER)) == 2
@@ -318,7 +318,7 @@ def test_factored_base_reactions_equal_total_load():
     total_axial = sum(-d.Pu for d in demands if d.group == COLUMN)
 
     length_ft = config.length_m / FT_TO_M
-    eave_ft = config.eave_height_m / FT_TO_M
+    eave_ft = config.height_m / FT_TO_M
     area = span_ft(config) * length_ft
     n_lines = config.n_purlin_spaces + 1
     purlin_lb = CAT["W8X10"].weight_plf * n_lines * length_ft
@@ -336,7 +336,7 @@ def test_column_axials_match_tributary_hand_calc():
     by_name = {d.name: d for d in demands}
     n_lines = config.n_purlin_spaces + 1
     purlin_psf = CAT["W8X10"].weight_plf * n_lines / span_ft(config)
-    eave_ft = config.eave_height_m / FT_TO_M
+    eave_ft = config.height_m / FT_TO_M
     col_self = 1.2 * CAT["W10X33"].weight_plf * eave_ft / 1000.0
 
     def expected(trib_ft):
@@ -415,7 +415,7 @@ def test_statics_bounds_never_exceed_the_fea_demands():
         end_wall_columns=0,
         end_girder_candidates=["W12X16", "W16X26", "W21X44"])
     for config in (cfg(), gable_cfg(), cfg(span_m=20.0, length_m=25.0),
-                   auto_cfg(span_m=12.0, length_m=14.0, eave_height_m=5.0),
+                   auto_cfg(span_m=12.0, length_m=14.0, height_m=5.0),
                    # the end_girder bound only applies with no gable columns
                    # (a plain simple span), so it needs its own case
                    no_gable_end_girder,
@@ -457,7 +457,7 @@ def test_prescreen_does_not_change_the_chosen_design():
 def test_prescreen_skips_hopeless_layouts_but_still_certifies_one():
     # columns far too slender for any candidate (KL/r >> 200 regardless of
     # load) - a demand-independent limit state the screen catches exactly
-    config = auto_cfg(span_m=40.0, length_m=50.0, eave_height_m=40.0,
+    config = auto_cfg(span_m=40.0, length_m=50.0, height_m=40.0,
                       end_girder_candidates=["W12X16", "W16X26", "W21X44"])
     result = optimize_layout(config)
     assert not result.feasible

@@ -152,7 +152,7 @@ def _presize_clear_span(config: ClearSpanConfig,
     sp = config.purlin_spacing_actual_m * M_TO_IN
     s_f = config.frame_spacing_m * M_TO_IN
     span = config.span_m * M_TO_IN
-    height = config.eave_height_m * M_TO_IN
+    height = config.height_m * M_TO_IN
 
     def factored(w_d: float, w_l: float) -> float:
         return max(1.4 * w_d, 1.2 * w_d + 1.6 * w_l)
@@ -309,7 +309,7 @@ def _bound_demands(config: ClearSpanConfig, geometry: FrameGeometry,
     q_d = config.superimposed_dead_kpa * KPA_TO_KSI   # kip/in^2
     q_l = config.live_kpa * KPA_TO_KSI
     span = config.span_m * M_TO_IN
-    height = config.eave_height_m * M_TO_IN
+    height = config.height_m * M_TO_IN
     s_f = config.frame_spacing_m * M_TO_IN
     n_sp = config.n_purlin_spaces
     sp = span / n_sp
@@ -909,7 +909,7 @@ def optimize_layout(config: ClearSpanConfig, method: str = "iterative",
     purlin_spacing_m, end_wall_columns) from the footprint by optimizing
     every realistic layout and keeping the lightest feasible design.
 
-    The footprint (span_m, length_m, eave_height_m) is the fixed input.
+    The footprint (span_m, length_m, height_m) is the fixed input.
     Layout fields left to auto-derive on the config are the search variables,
     ranging over the practice bands in clear_span.py; any field set
     explicitly is honored as-is. The winning result's .config carries the

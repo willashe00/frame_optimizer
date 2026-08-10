@@ -44,7 +44,7 @@ def tcfg(**kw):
         bottom_chord_candidates=["W12X40", "W12X53"],
         truss_web_candidates=["W8X24", "W10X33", "W12X40"],
         roof_system="truss",
-        span_m=24.0, length_m=24.0, eave_height_m=8.0,
+        span_m=24.0, length_m=24.0, height_m=8.0,
         n_frames=4, purlin_spacing_m=1.5, end_wall_columns=4,
         superimposed_dead_kpa=0.72, live_kpa=1.20,
         purlin_Lb_m=0.0,
@@ -129,7 +129,7 @@ def test_truss_topology_and_derived_geometry():
     bottoms = [nd for nd in geo.nodes if nd.name.startswith("NC")]
     assert len(bottoms) == n_int * (n - 1)
     for nd in bottoms:
-        assert nd.y == pytest.approx(config.eave_height_m * M_TO_IN - depth_in)
+        assert nd.y == pytest.approx(config.height_m * M_TO_IN - depth_in)
     # chord END nodes keep clamped rotations (moment-released member ends);
     # interior chord nodes ride the continuous chord
     assert not node["NC1.1"].free_rotations
@@ -426,7 +426,7 @@ def test_layout_search_resolves_to_truss_and_verifies_second_order():
         top_chord_candidates=["W12X40", "W12X53"],
         bottom_chord_candidates=["W12X40", "W12X53"],
         truss_web_candidates=["W8X24", "W10X33", "W12X40"],
-        span_m=14.0, length_m=20.0, eave_height_m=8.0,
+        span_m=14.0, length_m=20.0, height_m=8.0,
         superimposed_dead_kpa=0.72, live_kpa=1.20,
         purlin_Lb_m=0.0,
     )

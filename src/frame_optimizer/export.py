@@ -164,7 +164,7 @@ def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
             "roof_system": "truss" if config.is_truss else "girder",
             "span_m": _r(config.span_m),
             "length_m": _r(config.length_m),
-            "eave_height_m": _r(config.eave_height_m),
+            "height_m": _r(config.height_m),
             "n_frames": config.n_frames,
             "frame_spacing_m": _r(config.frame_spacing_m),
             "n_purlin_lines": config.n_purlin_spaces + 1,
