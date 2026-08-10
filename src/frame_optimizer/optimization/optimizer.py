@@ -1,43 +1,3 @@
-"""Lightest-section search over the candidate catalogs.
-
-Default method 'iterative' exploits the physics of a fully pinned gravity
-frame: member demands are statically determinate apart from self-weight, so
-they barely move when sections change. A fixed-point loop therefore converges
-in a handful of FEA solves:
-
-    assign the starting candidate to every group
-    repeat:
-        FEA with the current assignment (self-weight included)
-        per group: pick the lightest candidate whose checks pass for every
-                   member of the group under the current demands
-    until the assignment stops changing
-
-Convergence note: when the loop exits because the assignment repeated, the
-screening demands came from an FEA of exactly that assignment, so the final
-check table IS the certification - no extra solve needed.
-
-Runtime engineering. Work is only ever skipped when it provably cannot
-change which design wins; whenever a feasible design exists, the lightest
-one is still found and still certified by a real FEA solve:
-
-* Layouts no section could satisfy are proven infeasible by closed-form
-  statics and never solved at all (_infeasibility_proof) - the largest win
-  by far on footprints that are out of reach for rolled shapes.
-* Members whose demands are bit-identical are screened once, not once each
-  (_distinct_demands).
-* Screening solves skip Pynite's reaction recovery (solve_model) and run the
-  stability scan only on the first solve of each geometry - member results
-  are identical.
-* The starting assignment comes from closed-form tributary statics
-  (_presize_clear_span) instead of the lightest candidate, so clearly
-  infeasible light sections never trigger an FEA iteration.
-* optimize_layout() warm-starts each candidate layout from the previous
-  layout's winning sections and can evaluate independent layouts in
-  parallel worker processes (n_jobs).
-
-Method 'exhaustive' re-analyzes every combination (Cartesian product) and is
-provided for validation on small candidate lists.
-"""
 from __future__ import annotations
 
 import itertools
@@ -64,45 +24,21 @@ from ..sections import WShape, get_shapes
 AnyConfig = Union[FrameConfig, ClearSpanConfig]
 AnalyzeFn = Callable[..., list[MemberDemand]]
 
-# A layout is only declared infeasible without FEA when its lower-bound unity
-# check clears 1.0 by this margin. The bound formulas are exact statics, but
-# they are compared against what the FEA *reports*, which carries solver
-# round-off and the 20-station sampling of _chord_relative_sag. The
-# live-load deflection bounds are the tight ones - live load has no
-# self-weight slack to absorb either effect - and a 144-configuration sweep
-# put the worst overshoot at 1.9e-3 (end_girder) and 2.0e-5 (girder). 2%
-# leaves an order of magnitude over the worst of those while pruning
-# everything that matters in practice: a layout missing feasibility by under
-# 2% is simply analyzed normally.
+
+# A layout is only ruled out without FEA when its lower-bound UC clears 1.0 by this margin
 _PROOF_MARGIN = 1.02
 
-# Cost model deciding serial vs. parallel layout search (see _run_layouts).
-# _SPAWN_COST_S is what one worker process costs before it does any useful
-# work - on spawn platforms (Windows, macOS) it re-imports numpy, pandas and
-# Pynite. _COST_PER_MEMBER_S is the per-layout solve-and-check cost per model
-# member, calibrated against measured serial runs (a 9-layout/47-member
-# search takes ~25 s, a 36-layout/201-member one ~240 s). Both are
-# deliberately rough: they only pick between two code paths that return
-# identical results, and run-to-run timing noise on a loaded desktop is
-# larger than the error in either constant.
+# Startup cost
 _SPAWN_COST_S = 1.5
+
+# Estimated solve-and-check cost per model member per layout, seconds.
 _COST_PER_MEMBER_S = 9e-2
 
-# When statics rules out every candidate layout there is no design left to
-# find, only a diagnosis to report - so exactly one layout, the closest by the
-# statics ranking, is analyzed to produce a certified check table. Raising
-# this refines only *which* infeasible layout gets displayed, and on the large
-# models that reach this path each extra analysis costs as much as the rest of
-# the search put together.
+# When every layout is proven infeasible, how many of the closest ones still
+# get a real FEA so the report has a certified check table.
 _HOPELESS_ANALYSES = 1
 
-# ...and those analyses do not iterate to a fixed point. The loop converges by
-# the assignment repeating, but when a group cannot be satisfied at all
-# _screen_group keeps handing back whichever section is least bad, and that
-# choice moves with self-weight - so a hopeless layout burns every iteration
-# (a full FEA each) without ever settling. One re-solve still yields a
-# self-consistent certified table (demands always match the assignment they
-# are reported against), which is all a diagnosis needs.
+# Iteration cap for those diagnosis-only analyses (they never converge).
 _HOPELESS_ITERATIONS = 1
 
 

@@ -10,13 +10,6 @@ Two machine-readable views of the optimized structure:
                              geometry (nodes + members), the selected W-shape
                              per design group with profile dimensions, loads,
                              material, and headline optimization results.
-
-Every numeric key carries an explicit SI unit suffix (_mm, _m, _kN, _kPa,
-_MPa, _kg, _kg_m) so downstream consumers never have to guess. Baseplate
-reactions come from one extra FEA solve of the final assignment (linear
-analysis, so service 'D' is recovered exactly as (D+L) - L).
-
-schema_version 2: all quantities converted from US customary to SI.
 """
 from __future__ import annotations
 

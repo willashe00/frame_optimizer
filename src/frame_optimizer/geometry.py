@@ -27,15 +27,10 @@ class NodeInfo:
     z: float
     is_base: bool
     # True for nodes that sit on the interior of a continuous (physical)
-    # member, e.g. purlin-to-girder connections: the member passing through
-    # provides rotational stiffness, and clamping these rotations with the
-    # mechanism-stabilization supports would falsify its bending behavior.
+
     free_rotations: bool = False
     # True for nodes that must translate in-plane for the load path to work
-    # (truss panel points and the roller-side bearing): the blanket DX
-    # restraint that stabilizes the pinned frame would otherwise short-circuit
-    # the chord/diagonal axial forces. Every freed node needs axial stiffness
-    # back to a DX-restrained node (the truss provides it by construction).
+
     free_dx: bool = False
 
 

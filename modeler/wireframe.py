@@ -1,22 +1,6 @@
 """Interactive 3-D wireframe of an optimized frame (self-contained HTML).
 
-Rendering choices:
-* One polyline trace per member group in a fixed categorical color; the
-  legend entry carries the group's section designation.
-* Every member gets a visible text label with its section plus a row of
-  invisible hover targets spaced along its full length, so hovering anywhere
-  on the member raises its design card: section, length, every demand vs.
-  capacity with its demand-capacity ratio (DCR), the governing check, and
-  PASS/FAIL. Labels are one legend item ("section labels") so they can be
-  toggled off in a click.
-* Members that fail their checks are overdrawn in the reserved critical color
-  with their own legend entry, so a failed design is impossible to misread.
-* Model Y is vertical; plotly's scene Z is up, so coordinates map
-  (x, y, z) -> (x, z, y) and axes are titled X / Z / Elevation in meters.
-
-Only `visualize_result` is public. Everything here is display-only: no part of
-frame_optimizer depends on this module.
-"""
+   No part of frame_optimizer depends on this module."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -28,11 +12,6 @@ from frame_optimizer.config import IN_TO_M
 from frame_optimizer.geometry import BEAM, COLUMN
 from frame_optimizer.results import OptimizationResult
 
-# Categorical slots 1-4 of the reference palette in fixed order (validated as
-# a set; aqua's and yellow's lower surface contrast is relieved by the direct
-# section labels on every member). 'girder' takes slot 2 because it plays the
-# same primary-flexural role as 'beam' and the two never appear in one figure.
-# Groups without an entry fall back to the muted neutral until they get a slot.
 _GROUP_COLOR = {COLUMN: "#2a78d6", BEAM: "#1baf7a",
                 "girder": "#1baf7a", "purlin": "#eda100",
                 "end_girder": "#008300",

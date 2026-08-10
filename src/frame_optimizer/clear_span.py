@@ -2,41 +2,6 @@
 
 Intended for enclosures over large equipment where interior columns are not
 allowed. Topology (X = clear-span direction, Z = building length, Y up):
-
-* Transverse frames at spacing s_f = length/(n_frames - 1). Each frame is two
-  perimeter columns plus ONE clear-span roof girder — no interior columns or
-  interior column-supported beams anywhere.
-* Purlin lines run in Z at spacing s_p = span/n_spaces along the girder,
-  each spanning s_f between adjacent girders. The two lines at x = 0 and
-  x = span are eave purlins (half tributary width) spanning column-to-column.
-* Optional end-wall (gable) columns — exterior, on the two end walls only —
-  support the end girders at interior points. When used, the end girders form
-  their own 'end_girder' design group so they can be sized lighter than the
-  interior clear-span girders.
-* One-way load path: deck -> purlins -> girders -> perimeter columns.
-
-Analysis model (explicit purlins):
-
-* Everything is solved in ONE Pynite model with the same fully pinned
-  gravity-only scheme as the grid frame (analysis/frame_model.py). Purlins
-  are pin-ended members carrying the deck as a one-way line load
-  (q x purlin spacing; half for the eave lines) and deliver their reactions
-  to the girders as true point loads at shared nodes.
-* Girders are physical members: Pynite subdivides them internally at the
-  purlin (and gable-column) nodes but reports moments, shears, and
-  deflections over the whole span. Those interior nodes are created with
-  free rotations — the continuous girder stabilizes them — so the
-  mechanism-stabilization supports do not falsify girder bending.
-* Girders therefore carry only their self-weight as a line load; all roof
-  load reaches them through the purlins. Total statics close exactly.
-* `live_kpa` is the governing roof live/snow surface load (ASCE 7 roof live
-  Lr is ~0.96 kPa / 20 psf minimum; use the governing of Lr and the
-  flat-roof snow load for the site). Lateral loads remain out of scope
-  exactly as for the grid frame — a separate system must provide
-  wind/seismic resistance.
-
-Interface units are SI: meters, kPa, MPa, and millimeters for camber.
-Everything internal is kips and inches (see config.py conversion constants).
 """
 from __future__ import annotations
 
