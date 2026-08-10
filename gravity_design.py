@@ -1,9 +1,13 @@
 """Clear-span industrial building entry point.
 
-A steel enclosure over large industrial equipment: 20 m x 30 m plan assumed with
-NO interior columns. Transverse frames (two perimeter columns + one clear-span
-roof girder) repeat along the building length; purlins span frame-to-frame and
-carry the one-way roof deck.
+A steel enclosure over large industrial equipment with NO interior columns.
+Transverse frames (two perimeter columns + one clear-span roof member) repeat
+along the building length; purlins span frame-to-frame and carry the one-way
+roof deck. The roof member is a W-shape girder when one can carry the span;
+when none can (roof_system="auto" proves this by statics — e.g. the 52 m
+span below), each interior frame gets a parallel-chord Pratt roof truss
+bearing at the top chord on the same column tops, and the final design is
+re-verified with second-order (P-Delta) axial forces.
 
 Only the building footprint (span, length, eave height) is a geometric input.
 The layout — frame count, purlin spacing, and gable columns per end wall — is
@@ -45,33 +49,57 @@ config = ClearSpanConfig(
     ],
     column_candidates=[
         "W10X33", "W10X39", "W12X40", "W12X53", "W14X61",
+        # the 20 m eave needs stocky heavy columns: pin-pin and unbraced,
+        # KL/r <= 200 alone demands ry >= ~4 in (girt bracing would lighten
+        # these, but lateral systems are out of this model's scope)
+        "W14X145", "W14X176", "W14X211",
     ],
     end_girder_candidates=[
         "W12X16", "W14X22", "W16X26", "W18X35", "W21X44",
+    ],
+    # ------- Pratt truss roof (engages automatically when no W girder can
+    # carry the span; roof_system defaults to "auto") -------
+    top_chord_candidates=[
+        "W12X40", "W12X53", "W12X65", "W14X61", "W14X82",
+        "W14X99", "W14X109",
+    ],
+    bottom_chord_candidates=[
+        "W12X40", "W12X53", "W12X65", "W14X61", "W14X82",
+        "W14X99", "W14X109",
+    ],
+    truss_web_candidates=[
+        "W8X24", "W8X28", "W10X33", "W10X39", "W12X40", "W12X53",
     ],
 
 
     # ------- building footprint (configure these ONLY) -------
     span_m=52.0,                 # clear span: girder direction
     length_m=57.0,               # building length
-    eave_height_m=43.5,          # clearance over the equipment
+    eave_height_m=20.0,          # clearance over the equipment
+
+
 
 
     # ------- Other inputs (defaults) -------
 
     # ------- gravity loads -------
     superimposed_dead_kpa=0.72,  # roof deck + insulation + collateral (MEP etc.)
+
     live_kpa=1.20,               # governing of ASCE 7 roof live (Lr) and snow
 
     # ------- optional design settings (defaults shown unless noted) -------
     Fy_mpa=345.0, Fu_mpa=450.0, E_mpa=200000.0,   # ASTM A992
+
     girder_Lb_m=None,            # None = braced at every purlin (the default)
+
     purlin_Lb_m=0.0,             # steel deck braces the top flange
-    girder_camber_mm=25.0,       # shop camber on the interior girders; credited
-                                 # against the total-deflection check only
-    check_deflection=True,       # L/360 live, L/240 total (floor-strict values;
-                                 # relax via girder_/purlin_defl_*_ratio when
-                                 # roof limits, e.g. L/240 & L/180, apply)
+
+    girder_camber_mm=25.0,       # shop camber on the interior girders
+
+    truss_camber_mm=40.0,        # shop camber on the trusses
+
+    check_deflection=True,       # L/360 live, L/240 tota
+
     enforce_slenderness_limit=True,   # KL/r <= 200 on columns
 )
 

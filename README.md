@@ -65,6 +65,32 @@ span², so spanning the long way is never lighter).
   this option.
 - One-way load path: deck → purlins → girders → perimeter columns.
 
+### Pratt-truss roof for very long spans
+
+When the clear span outgrows every rolled W-shape (`roof_system="auto"`, the
+default, proves this with the FEA-free girder bound before any solve — or set
+`roof_system="truss"` explicitly), the interior girders are replaced by
+parallel-chord **Pratt trusses**:
+
+- **Top-chord bearing**: the top chord stays at the girder elevation and
+  bears on the same column tops; the truss depth (`truss_depth_m`, default
+  span/12) hangs below the eave. Roof plane, purlins, end walls, and columns
+  are untouched — interior clearance under the truss is reduced by the depth.
+- Even panel count with panel length ≈ depth (diagonals ≈ 45°); the bottom
+  chord ends at the first interior panel points and the end diagonals carry
+  the support shear (no members on the column axis). Diagonals are in
+  tension under gravity, verticals in compression.
+- The top chord is one continuous full-span member (like the girder it
+  replaces), so its chord-relative sag IS the truss deflection check and
+  `truss_camber_mm` is credited the same way girder camber is.
+- Second order: the search amplifies compression-chord moments with the
+  AISC Appendix 8 **B1** factor (B2 = 1, non-sway gravity); the winning
+  design is then re-verified with second-order **axial** forces from a
+  Pynite P-Delta solve and the check table is rebuilt from them (see
+  `_verify_second_order`). The summary reports the verification outcome.
+- End frames keep their gable-column-propped W end girders
+  (`end_girder_candidates` is required in truss mode).
+
 Design groups (one shared section per group; heaviest-loaded member governs):
 
 | Group | Members | Notes |
@@ -73,6 +99,9 @@ Design groups (one shared section per group; heaviest-loaded member governs):
 | `girder` | interior clear-span girders | Lb = purlin spacing, camber credit |
 | `end_girder` | the two end-wall girders | own candidates; lighter when gable columns exist |
 | `purlin` | roof purlins | `purlin_Lb_m=0` = deck-braced top flange |
+| `top_chord` | truss top chords (truss mode) | KLx = panel, KLy/Lb = purlin spacing, B1, camber, deflection check (δ ∝ 1/A) |
+| `bottom_chord` | truss bottom chords (truss mode) | tension, L/r ≤ 300; braced out-of-plane at `bottom_chord_brace_spacing_m` (assumed struts, default every panel) |
+| `truss_web` | truss verticals + diagonals (truss mode) | one shared shape; pin-ended, checked over own length |
 
 ## Pipeline
 
@@ -204,7 +233,14 @@ the gravity model.
   restrained in DX/DZ/rotations purely to remove mechanism DOFs. Valid only
   because those restraints attract no force under gravity. **Never add
   lateral loads to this model.** Wind/seismic need a separate system —
-  a tall single-story shell is usually wind-governed.
+  a tall single-story shell is usually wind-governed. (Truss frames are the
+  one exception to the blanket DX restraint: their panel nodes must
+  translate for chord action, so each truss frame is supported pin + roller
+  — one bearing keeps DX, everything else on that frame frees it.)
+- Truss mode: top chord braced out-of-plane by the purlins, bottom chord by
+  assumed bracing struts at `bottom_chord_brace_spacing_m` (not modeled);
+  webs are checked pin-ended over their own length, K = 1. Connection and
+  gusset weight is not included in the reported steel mass.
 - Purlins are explicit pin-ended members; they deliver true point reactions
   to the girders at shared nodes. Girders are Pynite physical members:
   subdivided at purlin nodes, checked over the full span, self-weight only

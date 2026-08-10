@@ -22,6 +22,9 @@ class OptimizationResult:
                                       # optimize_layout() only: one entry per
                                       # candidate layout tried (this result is
                                       # the winner)
+    second_order: dict | None = None  # truss winners only: P-Delta
+                                      # verification record (method, verified,
+                                      # passes, sections_changed, note)
 
     def summary(self) -> str:
         lines = ["=" * 62, "frame_optimizer - gravity frame optimization result", "=" * 62]
@@ -39,6 +42,19 @@ class OptimizationResult:
                 f"Layout: lightest of {n_feasible} feasible / "
                 f"{len(self.layout_search)} realistic layout(s) searched "
                 "for the footprint")
+        if self.second_order is not None:
+            so = self.second_order
+            if so["verified"]:
+                resized = (", sections resized against second-order demands"
+                           if so["sections_changed"] else "")
+                lines.append(
+                    f"2nd order: {so['method']} verification PASSED "
+                    f"({so['passes']} pass(es){resized})")
+            else:
+                note = f" - {so['note']}" if so.get("note") else ""
+                lines.append(
+                    f"WARNING: {so['method']} second-order verification "
+                    f"FAILED{note}")
 
         lines.append("-" * 62)
         lines.append("Selected sections:")

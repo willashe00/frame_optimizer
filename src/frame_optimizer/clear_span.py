@@ -50,6 +50,12 @@ from .geometry import FrameGeometry, MemberInfo, NodeInfo
 GIRDER = "girder"
 END_GIRDER = "end_girder"
 PURLIN = "purlin"
+# Pratt-truss roof system (roof_system="truss"): replaces the interior W
+# girders when the clear span outgrows every rolled shape. Verticals and
+# diagonals share one 'truss_web' group (one shape — fabrication-uniform).
+TOP_CHORD = "top_chord"
+BOTTOM_CHORD = "bottom_chord"
+TRUSS_WEB = "truss_web"
 
 # two girder-axis nodes closer than this are treated as the same point
 _COINCIDENT_TOL_IN = 1e-6
@@ -204,12 +210,50 @@ class ClearSpanConfig:
     purlin_defl_total_ratio: float | None = None
     enforce_slenderness_limit: bool = True   # KL/r <= 200 on columns
 
+    # --- roof system: W girder vs. Pratt truss ---
+    # "auto" (default) designs W girders when any candidate can carry the
+    # span, and switches to a parallel-chord Pratt truss when the FEA-free
+    # lower-bound proof shows none can. The truss bears at the TOP chord on
+    # the existing column tops (roof plane, purlins, end walls, and columns
+    # keep their elevations; the truss depth hangs below the eave). End
+    # frames keep their gable-column-propped W end girders either way.
+    roof_system: str = "auto"                # "auto" | "girder" | "truss"
+    top_chord_candidates: list[str] | None = None
+    bottom_chord_candidates: list[str] | None = None
+    truss_web_candidates: list[str] | None = None
+    truss_depth_m: float | None = None       # None -> span/12
+    truss_camber_mm: float = 0.0             # credited like girder camber,
+                                             # against total deflection only
+    bottom_chord_brace_spacing_m: float | None = None  # out-of-plane bracing
+                                             # of the bottom chord (assumed
+                                             # struts, not modeled);
+                                             # None -> every panel point
+
     def __post_init__(self) -> None:
-        for name in ("girder_candidates", "purlin_candidates", "column_candidates"):
+        if self.roof_system not in ("auto", "girder", "truss"):
+            raise ValueError('roof_system must be "auto", "girder", or "truss".')
+        # girder candidates stay required for "auto" (it must be able to
+        # prove girder infeasibility before switching) and for "girder"
+        required = ("purlin_candidates", "column_candidates")
+        if self.roof_system != "truss":
+            required = ("girder_candidates",) + required
+        for name in required:
             if not getattr(self, name):
                 raise ValueError(f"{name} must be non-empty.")
         if self.end_girder_candidates is not None and not self.end_girder_candidates:
             raise ValueError("end_girder_candidates must be non-empty when given.")
+        if self.roof_system == "truss":
+            for name in ("top_chord_candidates", "bottom_chord_candidates",
+                         "truss_web_candidates"):
+                if not getattr(self, name):
+                    raise ValueError(
+                        f'{name} must be non-empty when roof_system="truss".')
+            if self.end_girder_candidates is None:
+                raise ValueError(
+                    'roof_system="truss" requires end_girder_candidates: the '
+                    "end frames keep gable-column-propped W end girders (a "
+                    "truss on a propped wall line has no purpose)."
+                )
         if self.span_m <= 0 or self.length_m <= 0 or self.eave_height_m <= 0:
             raise ValueError("span_m, length_m, and eave_height_m must be positive.")
 
@@ -250,6 +294,24 @@ class ClearSpanConfig:
             raise ValueError("Loads must be non-negative.")
         if self.girder_camber_mm < 0:
             raise ValueError("girder_camber_mm must be >= 0.")
+        if self.truss_camber_mm < 0:
+            raise ValueError("truss_camber_mm must be >= 0.")
+        if self.roof_system == "truss" and self.n_frames < 3:
+            raise ValueError(
+                'roof_system="truss" needs an interior frame to carry a truss '
+                "(n_frames >= 3); a 2-frame building is all end walls, where "
+                "gable-column-propped end girders already cover the span."
+            )
+        if self.has_truss_groups or self.roof_system == "truss":
+            if not (0.0 < self.truss_depth_actual_m < self.eave_height_m):
+                raise ValueError(
+                    "truss depth must be in (0, eave_height_m): the truss "
+                    "bears at the top chord and hangs below the eave."
+                )
+            if (self.bottom_chord_brace_spacing_m is not None
+                    and self.bottom_chord_brace_spacing_m <= 0.0):
+                raise ValueError(
+                    "bottom_chord_brace_spacing_m must be positive when given.")
 
     # --- derived geometry ---
     @property
@@ -274,10 +336,54 @@ class ClearSpanConfig:
     def has_end_girder_group(self) -> bool:
         return self.end_girder_candidates is not None
 
+    # --- Pratt truss (derived as properties, never written back, so
+    # dataclasses.replace() re-derives them consistently) ---
+    @property
+    def is_truss(self) -> bool:
+        """True only for a RESOLVED truss config. "auto" behaves as girder
+        everywhere downstream until the optimizer resolves it (see
+        optimizer._resolve_roof_system)."""
+        return self.roof_system == "truss"
+
+    @property
+    def has_truss_groups(self) -> bool:
+        return all(getattr(self, name) for name in (
+            "top_chord_candidates", "bottom_chord_candidates",
+            "truss_web_candidates"))
+
+    @property
+    def truss_depth_actual_m(self) -> float:
+        """Parallel-chord truss depth: span/12 is the customary economical
+        depth for long-span roof trusses unless the user pins one."""
+        if self.truss_depth_m is not None:
+            return self.truss_depth_m
+        return self.span_m / 12.0
+
+    @property
+    def n_truss_panels(self) -> int:
+        """Even panel count (vertical at midspan) with panel length as close
+        to the depth as possible — diagonals near the customary 45 degrees.
+        Minimum 4: the bottom chord spans the interior panel points (it ends
+        one panel in from each bearing), which needs at least three."""
+        return max(4, 2 * round(self.span_m / self.truss_depth_actual_m / 2.0))
+
+    @property
+    def truss_panel_m(self) -> float:
+        return self.span_m / self.n_truss_panels
+
     @property
     def candidates_by_group(self) -> dict[str, list[str]]:
         """Candidate section labels per design group. Key order sets the
         reporting order in results and the wireframe legend."""
+        if self.is_truss:
+            groups = {COLUMN: self.column_candidates,
+                      TOP_CHORD: self.top_chord_candidates,
+                      BOTTOM_CHORD: self.bottom_chord_candidates}
+            if self.has_end_girder_group:
+                groups[END_GIRDER] = self.end_girder_candidates
+            groups[TRUSS_WEB] = self.truss_web_candidates
+            groups[PURLIN] = self.purlin_candidates
+            return groups
         groups = {COLUMN: self.column_candidates, GIRDER: self.girder_candidates}
         if self.has_end_girder_group:
             groups[END_GIRDER] = self.end_girder_candidates
@@ -287,15 +393,25 @@ class ClearSpanConfig:
     def describe(self) -> list[str]:
         gable = (f", {self.end_wall_columns} gable column(s)/end wall"
                  if self.end_wall_columns else "")
-        camber = (f", girder camber {self.girder_camber_mm:.0f} mm"
-                  if self.girder_camber_mm else "")
+        if self.is_truss:
+            camber = (f", truss camber {self.truss_camber_mm:.0f} mm"
+                      if self.truss_camber_mm else "")
+            roof = (f"Roof:   Pratt truss (top-chord bearing), depth "
+                    f"{self.truss_depth_actual_m:.2f} m, {self.n_truss_panels} "
+                    f"panels @ {self.truss_panel_m:.2f} m; purlins @ "
+                    f"{self.purlin_spacing_actual_m:.2f} m "
+                    f"({self.n_purlin_spaces + 1} lines){camber}")
+        else:
+            camber = (f", girder camber {self.girder_camber_mm:.0f} mm"
+                      if self.girder_camber_mm else "")
+            roof = (f"Roof:   purlins @ {self.purlin_spacing_actual_m:.2f} m "
+                    f"({self.n_purlin_spaces + 1} lines), one-way deck -> "
+                    f"purlin -> girder{camber}")
         lines = [
             f"Frame:  clear span {self.span_m:.1f} m x length {self.length_m:.1f} m, "
             f"{self.n_frames} frames @ {self.frame_spacing_m:.2f} m, "
             f"eave {self.eave_height_m:.1f} m (NO interior columns{gable})",
-            f"Roof:   purlins @ {self.purlin_spacing_actual_m:.2f} m "
-            f"({self.n_purlin_spaces + 1} lines), one-way deck -> purlin -> girder"
-            f"{camber}",
+            roof,
             f"Loads:  SDL = {self.superimposed_dead_kpa} kPa, "
             f"roof L/S = {self.live_kpa} kPa (1.4D, 1.2D+1.6L) + self-weight",
         ]
@@ -329,19 +445,11 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
 
     sp_in = config.purlin_spacing_actual_m * M_TO_IN
     girder_Lb = sp_in if config.girder_Lb_m is None else config.girder_Lb_m * M_TO_IN
-    girder_rules = GroupRules(
-        Lb_in=girder_Lb,
-        check_deflection=config.check_deflection,
-        defl_live_ratio=g_live, defl_total_ratio=g_total,
-        Cb_simple_span=True,
-        camber_in=config.girder_camber_mm * MM_TO_IN,
-    )
     rules = {
         COLUMN: GroupRules(
             check_deflection=False,   # columns: no sag check (they report 0 anyway)
             check_slenderness=config.enforce_slenderness_limit,
         ),
-        GIRDER: girder_rules,
         PURLIN: GroupRules(
             Lb_in=None if config.purlin_Lb_m is None else config.purlin_Lb_m * M_TO_IN,
             check_deflection=config.check_deflection,
@@ -349,6 +457,50 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
             Cb_simple_span=True,
         ),
     }
+    if config.is_truss:
+        panel_in = config.truss_panel_m * M_TO_IN
+        brace_in = (panel_in if config.bottom_chord_brace_spacing_m is None
+                    else config.bottom_chord_brace_spacing_m * M_TO_IN)
+        # Top chord: compression + local bending (purlins land between panel
+        # points). In-plane buckling over one panel, out-of-plane and LTB
+        # braced by the purlins. Its chord-relative sag IS the truss midspan
+        # deflection (one full-span physical member), so the deflection check
+        # and camber credit apply here, projected by area (truss sag is
+        # governed by chord axial stiffness, delta ~ 1/A).
+        rules[TOP_CHORD] = GroupRules(
+            Lb_in=sp_in,
+            check_deflection=config.check_deflection,
+            defl_live_ratio=g_live, defl_total_ratio=g_total,
+            camber_in=config.truss_camber_mm * MM_TO_IN,
+            check_slenderness=True,
+            KLx_in=panel_in, KLy_in=sp_in,
+            apply_B1=True,
+            defl_scale_axial=True,
+        )
+        # Bottom chord: tension under gravity (L/r <= 300); braced
+        # out-of-plane by assumed bracing struts (not modeled) at
+        # bottom_chord_brace_spacing_m, default every panel point.
+        rules[BOTTOM_CHORD] = GroupRules(
+            Lb_in=brace_in,
+            check_deflection=False,
+            check_slenderness=True,
+            KLx_in=panel_in, KLy_in=brace_in,
+            apply_B1=True,
+        )
+        # Webs: pin-ended axial members checked over their own length
+        # (K = 1, no bracing credit — conservative).
+        rules[TRUSS_WEB] = GroupRules(
+            check_deflection=False,
+            check_slenderness=True,
+        )
+    else:
+        rules[GIRDER] = GroupRules(
+            Lb_in=girder_Lb,
+            check_deflection=config.check_deflection,
+            defl_live_ratio=g_live, defl_total_ratio=g_total,
+            Cb_simple_span=True,
+            camber_in=config.girder_camber_mm * MM_TO_IN,
+        )
     if config.has_end_girder_group:
         # same bracing/serviceability rules as the interior girders, but no
         # camber: gable-column support makes their effective spans short
@@ -373,17 +525,27 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
     nodes: list[NodeInfo] = []
     members: list[MemberInfo] = []
 
+    # truss frames must translate in-plane (chords shorten/stretch), so their
+    # nodes drop the blanket DX restraint: each interior frame is supported
+    # pin (NE0 keeps DX) + roller (NE1 and every panel/purlin node free it)
+    truss = config.is_truss
+
+    def is_truss_frame(j: int) -> bool:
+        return truss and j not in end_frames
+
     for j in range(nf):
         z = j * s_f
         for side, x in ((0, 0.0), (1, span)):
             nodes.append(NodeInfo(f"NB{side}.{j}", x, 0.0, z, is_base=True))
-            nodes.append(NodeInfo(f"NE{side}.{j}", x, height, z, is_base=False))
+            nodes.append(NodeInfo(f"NE{side}.{j}", x, height, z, is_base=False,
+                                  free_dx=(side == 1 and is_truss_frame(j))))
         # interior purlin-line nodes sit on the girder axis: Pynite splits the
         # physical girder there, and the continuous girder provides their
         # rotational stiffness (free_rotations - see analysis/frame_model.py)
         for i in range(1, n_sp):
             nodes.append(NodeInfo(f"NP{i}.{j}", i * sp, height, z,
-                                  is_base=False, free_rotations=True))
+                                  is_base=False, free_rotations=True,
+                                  free_dx=is_truss_frame(j)))
 
     def girder_group(j: int) -> str:
         if config.has_end_girder_group and j in end_frames:
@@ -397,6 +559,8 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
                 i_node=f"NB{side}.{j}", j_node=f"NE{side}.{j}",
                 length_in=height, story=1, trib_width_in=0.0,
             ))
+        if is_truss_frame(j):
+            continue   # interior truss frames are assembled below
         # girders carry only self-weight directly; ALL roof load arrives as
         # purlin point reactions at the shared nodes
         members.append(MemberInfo(
@@ -404,6 +568,77 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
             i_node=f"NE0.{j}", j_node=f"NE1.{j}",
             length_in=span, story=1, trib_width_in=0.0,
         ))
+
+    # Pratt truss on every interior frame (top-chord bearing): the top chord
+    # replaces the girder as ONE continuous full-span member at eave height —
+    # purlin wiring, chord-relative sag (= truss midspan deflection), and
+    # camber credit all carry over from the girder scheme. The bottom chord
+    # hangs at eave - depth and ends at the FIRST interior panel points: the
+    # end diagonals carry the support shear from the bearings down to it.
+    # (Bottom-chord nodes at x = 0 would sit on the column axis, where Pynite
+    # would subdivide the physical column and feed chord force into parasitic
+    # column bending.) Webs are pin-ended; diagonals slope down toward
+    # midspan (tension under gravity), verticals carry compression.
+    if truss:
+        depth = config.truss_depth_actual_m * M_TO_IN
+        n_pan = config.n_truss_panels
+        panel = span / n_pan
+        diag_len = math.hypot(panel, depth)
+        purlin_xs = {i: i * sp for i in range(1, n_sp)}
+
+        for j in range(1, nf - 1):
+            z = j * s_f
+
+            # top-chord panel points: reuse a coincident purlin node, else add
+            top_names: dict[int, str] = {0: f"NE0.{j}", n_pan: f"NE1.{j}"}
+            for k in range(1, n_pan):
+                x = k * panel
+                for i, xi in purlin_xs.items():
+                    if abs(x - xi) < _COINCIDENT_TOL_IN:
+                        top_names[k] = f"NP{i}.{j}"
+                        break
+                else:
+                    nodes.append(NodeInfo(f"NT{k}.{j}", x, height, z,
+                                          is_base=False, free_rotations=True,
+                                          free_dx=True))
+                    top_names[k] = f"NT{k}.{j}"
+
+            # bottom-chord nodes k = 1..n-1: interior ones sit on the
+            # continuous chord (free rotations); the END nodes (k = 1, n-1)
+            # are member ends of a moment-released chord and must keep the
+            # rotational restraint
+            for k in range(1, n_pan):
+                nodes.append(NodeInfo(f"NC{k}.{j}", k * panel, height - depth,
+                                      z, is_base=False,
+                                      free_rotations=(1 < k < n_pan - 1),
+                                      free_dx=True))
+
+            members.append(MemberInfo(
+                name=f"TC{j}", group=TOP_CHORD,
+                i_node=f"NE0.{j}", j_node=f"NE1.{j}",
+                length_in=span, story=1, trib_width_in=0.0,
+            ))
+            members.append(MemberInfo(
+                name=f"BC{j}", group=BOTTOM_CHORD,
+                i_node=f"NC1.{j}", j_node=f"NC{n_pan - 1}.{j}",
+                length_in=span - 2.0 * panel, story=1, trib_width_in=0.0,
+            ))
+            for k in range(1, n_pan):
+                members.append(MemberInfo(
+                    name=f"TV{k}.{j}", group=TRUSS_WEB,
+                    i_node=top_names[k], j_node=f"NC{k}.{j}",
+                    length_in=depth, story=1, trib_width_in=0.0,
+                ))
+            for i in range(n_pan):
+                if i < n_pan // 2:
+                    i_node, j_node = top_names[i], f"NC{i + 1}.{j}"
+                else:
+                    i_node, j_node = top_names[i + 1], f"NC{i}.{j}"
+                members.append(MemberInfo(
+                    name=f"TD{i}.{j}", group=TRUSS_WEB,
+                    i_node=i_node, j_node=j_node,
+                    length_in=diag_len, story=1, trib_width_in=0.0,
+                ))
 
     # end-wall (gable) columns: exterior members under the two end girders.
     # A gable column that lands on a purlin line reuses that node.

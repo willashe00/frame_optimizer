@@ -35,8 +35,13 @@ from frame_optimizer.results import OptimizationResult
 # Groups without an entry fall back to the muted neutral until they get a slot.
 _GROUP_COLOR = {COLUMN: "#2a78d6", BEAM: "#1baf7a",
                 "girder": "#1baf7a", "purlin": "#eda100",
-                "end_girder": "#008300"}
-_GROUP_WIDTH = {COLUMN: 6, BEAM: 4, "girder": 5, "purlin": 3, "end_girder": 5}
+                "end_girder": "#008300",
+                # Pratt truss roof: the top chord inherits the girder's
+                # primary-flexural slot (they never appear together)
+                "top_chord": "#1baf7a", "bottom_chord": "#7a4fd0",
+                "truss_web": "#3fb6c9"}
+_GROUP_WIDTH = {COLUMN: 6, BEAM: 4, "girder": 5, "purlin": 3, "end_girder": 5,
+                "top_chord": 5, "bottom_chord": 5, "truss_web": 2}
 _DEFAULT_WIDTH = 4
 
 _SURFACE = "#fcfcfb"

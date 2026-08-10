@@ -50,7 +50,8 @@ import pandas as pd
 from typing import Callable, Union
 
 from ..analysis import MemberDemand, analyze_frame
-from ..clear_span import (END_GIRDER, GIRDER, PURLIN, ClearSpanConfig,
+from ..clear_span import (BOTTOM_CHORD, END_GIRDER, GIRDER, PURLIN, TOP_CHORD,
+                          TRUSS_WEB, ClearSpanConfig,
                           build_clear_span_geometry, candidate_layouts,
                           clear_span_check_params)
 from ..config import (COLUMN, FT, KPA_TO_KSI, LB_TO_KG, M_TO_IN, MPA_TO_KSI,
@@ -236,10 +237,8 @@ def _presize_clear_span(config: ClearSpanConfig,
         )
 
     purlin0 = candidates[PURLIN][0]
-    girder0 = candidates[GIRDER][0]
     column0 = candidates[COLUMN][0]
     w_purlin = purlin0.weight_plf * PLF_TO_KIP_PER_IN
-    w_girder = girder0.weight_plf * PLF_TO_KIP_PER_IN
     w_column = column0.weight_plf * PLF_TO_KIP_PER_IN
 
     demands: dict[str, list[MemberDemand]] = {}
@@ -249,14 +248,69 @@ def _presize_clear_span(config: ClearSpanConfig,
         PURLIN, "~P", purlin0, s_f,
         w_d=q_d * sp + w_purlin, w_l=q_l * sp)]
 
-    # interior girder: equivalent uniform load (roof + smeared purlin self)
-    # x frame spacing + girder self; the exact-cancellation statics of the
-    # point-load pattern make w*L^2/8 the true midspan moment.
     smear = w_purlin / sp   # purlin self-weight as an equivalent surface load
-    g_wd = (q_d + smear) * s_f + w_girder
-    g_wl = q_l * s_f
-    demands[GIRDER] = [simple_span(GIRDER, "~G", girder0, span,
-                                   w_d=g_wd, w_l=g_wl)]
+    if config.is_truss:
+        # Pratt truss statics: midspan chord force ~ M/d with M = w*L^2/8,
+        # end web forces from the support shear V = w*L/2 (diagonal V/sin
+        # theta in tension, first vertical V in compression). The chords'
+        # local bending between panel points is ~ w*p^2/8. Truss midspan sag
+        # uses the parallel-chord identity I ~ A_chord*d^2/2, consistent
+        # with the checker's area-based deflection projection.
+        top0 = candidates[TOP_CHORD][0]
+        bot0 = candidates[BOTTOM_CHORD][0]
+        web0 = candidates[TRUSS_WEB][0]
+        depth = config.truss_depth_actual_m * M_TO_IN
+        panel = config.truss_panel_m * M_TO_IN
+        diag_len = math.hypot(panel, depth)
+        w_top = top0.weight_plf * PLF_TO_KIP_PER_IN
+        w_bot = bot0.weight_plf * PLF_TO_KIP_PER_IN
+        t_wd = (q_d + smear) * s_f + w_top + w_bot
+        t_wl = q_l * s_f
+        w_u = factored(t_wd, t_wl)
+        P_chord = w_u * span**2 / 8.0 / depth
+        V = w_u * span / 2.0
+        EI = E * (top0.A * depth**2 / 2.0)
+
+        demands[TOP_CHORD] = [MemberDemand(
+            name="~TC", group=TOP_CHORD, story=1, length_in=span,
+            trib_width_in=0.0, shape_used=top0.name, Ix_used=top0.Ix,
+            A_used=top0.A,
+            Pu=-P_chord, Mux=w_u * panel**2 / 8.0, Muy=0.0,
+            Vu=w_u * panel / 2.0,
+            defl_total_in=5.0 * (t_wd + t_wl) * span**4 / (384.0 * EI),
+            defl_live_in=5.0 * t_wl * span**4 / (384.0 * EI))]
+        demands[BOTTOM_CHORD] = [MemberDemand(
+            name="~BC", group=BOTTOM_CHORD, story=1, length_in=span,
+            trib_width_in=0.0, shape_used=bot0.name, Ix_used=bot0.Ix,
+            A_used=bot0.A,
+            Pu=P_chord, Mux=0.0, Muy=0.0, Vu=0.0,
+            defl_total_in=0.0, defl_live_in=0.0)]
+        demands[TRUSS_WEB] = [
+            MemberDemand(
+                name="~TD", group=TRUSS_WEB, story=1, length_in=diag_len,
+                trib_width_in=0.0, shape_used=web0.name, Ix_used=web0.Ix,
+                A_used=web0.A,
+                Pu=V * diag_len / depth, Mux=0.0, Muy=0.0, Vu=0.0,
+                defl_total_in=0.0, defl_live_in=0.0),
+            MemberDemand(
+                name="~TV", group=TRUSS_WEB, story=1, length_in=depth,
+                trib_width_in=0.0, shape_used=web0.name, Ix_used=web0.Ix,
+                A_used=web0.A,
+                Pu=-V, Mux=0.0, Muy=0.0, Vu=0.0,
+                defl_total_in=0.0, defl_live_in=0.0),
+        ]
+        w_roof_self = w_top + w_bot   # per-frame roof spanning self-weight
+    else:
+        girder0 = candidates[GIRDER][0]
+        w_girder = girder0.weight_plf * PLF_TO_KIP_PER_IN
+        # interior girder: equivalent uniform load (roof + smeared purlin
+        # self) x frame spacing + girder self; the exact-cancellation statics
+        # of the point-load pattern make w*L^2/8 the true midspan moment.
+        g_wd = (q_d + smear) * s_f + w_girder
+        g_wl = q_l * s_f
+        demands[GIRDER] = [simple_span(GIRDER, "~G", girder0, span,
+                                       w_d=g_wd, w_l=g_wl)]
+        w_roof_self = w_girder
 
     if config.has_end_girder_group:
         # end wall: half tributary width, segments between gable columns
@@ -269,9 +323,9 @@ def _presize_clear_span(config: ClearSpanConfig,
             w_l=q_l * s_f / 2.0, length_in=span)]
 
     # interior perimeter column: half the roof tributary of one full bay
-    # (everything on its side of the span reaches it, via girder or eave
-    # purlin) + member self-weights
-    p_d = (q_d + smear) * s_f * span / 2.0 + w_girder * span / 2.0 \
+    # (everything on its side of the span reaches it, via girder/truss or
+    # eave purlin) + member self-weights
+    p_d = (q_d + smear) * s_f * span / 2.0 + w_roof_self * span / 2.0 \
         + w_column * height
     p_l = q_l * s_f * span / 2.0
     demands[COLUMN] = [MemberDemand(
@@ -634,29 +688,42 @@ def _optimize_exhaustive(config: AnyConfig, geometry: FrameGeometry,
 
 def optimize(config: AnyConfig, method: str = "iterative",
              max_iterations: int = 10, verbose: bool = False,
-             warm_start: dict[str, str] | None = None) -> OptimizationResult:
+             warm_start: dict[str, str] | None = None,
+             second_order: bool = False) -> OptimizationResult:
     """Find the lightest per-group W-shape assignment that passes every
     AISC 360 LRFD check (and serviceability, if enabled). Members of a design
     group share one section; the conventional grid frame has two groups
     ('column', 'beam'), the clear-span building three ('column', 'girder',
-    'purlin').
+    'purlin') — or five with a Pratt-truss roof ('column', 'top_chord',
+    'bottom_chord', 'truss_web', 'purlin', plus 'end_girder').
 
     warm_start ({group: shape name}) seeds the iterative search's starting
     assignment (it is ignored if it does not cover the geometry's groups
     with known candidates). The fixed point reached is verified by FEA
-    either way; a warm start only reduces the number of solves."""
+    either way; a warm start only reduces the number of solves.
+
+    second_order=True runs the P-Delta verification on a feasible truss
+    design (see _verify_second_order); it is a no-op for girder configs."""
+    if isinstance(config, ClearSpanConfig):
+        config = _resolve_roof_system(config)
     geometry, params, analyze = _prepare(config)
     candidates = _candidates_by_group(config)
     _validate_groups(geometry, candidates, params)
 
     if method == "iterative":
-        return _optimize_iterative(config, geometry, candidates, params,
-                                   analyze, max_iterations, verbose,
-                                   warm_start=warm_start)
-    if method == "exhaustive":
-        return _optimize_exhaustive(config, geometry, candidates, params,
-                                    analyze, verbose)
-    raise ValueError("method must be 'iterative' or 'exhaustive'.")
+        result = _optimize_iterative(config, geometry, candidates, params,
+                                     analyze, max_iterations, verbose,
+                                     warm_start=warm_start)
+    elif method == "exhaustive":
+        result = _optimize_exhaustive(config, geometry, candidates, params,
+                                      analyze, verbose)
+    else:
+        raise ValueError("method must be 'iterative' or 'exhaustive'.")
+
+    if (second_order and isinstance(config, ClearSpanConfig)
+            and config.is_truss and result.feasible):
+        result = _verify_second_order(result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +806,117 @@ def _variant(config: ClearSpanConfig, layout: tuple[int, float, int]) -> ClearSp
     n_frames, spacing, gables = layout
     return replace(config, n_frames=n_frames, purlin_spacing_m=spacing,
                    end_wall_columns=gables)
+
+
+def _with_roof_system(config: ClearSpanConfig, roof_system: str) -> ClearSpanConfig:
+    """replace() with the roof system, keeping auto-derived layout fields
+    auto. A plain replace() passes their concrete derived values back in,
+    which would silently pin the layout search to a single layout."""
+    auto = {name: None for name in config.auto_layout_fields}
+    return replace(config, roof_system=roof_system, **auto)
+
+
+def _resolve_roof_system(config: ClearSpanConfig) -> ClearSpanConfig:
+    """Resolve roof_system="auto" to a concrete "girder" or "truss" — no FEA.
+
+    The girder keeps the roof unless the lower-bound proof (the exact
+    machinery of _infeasibility_proof) shows that in EVERY candidate layout
+    no girder candidate can carry the span; only then, and only when truss
+    candidate lists are configured, does the Pratt truss take over. A layout
+    whose girder could pass is never taken away from the girder path, so
+    "auto" is exactly the historical behavior for buildable girder spans.
+    (If the girder search still ends infeasible — the bounds cannot prove
+    everything — optimize_layout() falls back to a truss search afterwards.)
+    """
+    if config.roof_system != "auto":
+        return config
+    girder_cfg = _with_roof_system(config, "girder")
+    if not config.has_truss_groups:
+        return girder_cfg
+    girder_shapes = get_shapes(config.girder_candidates)
+    for layout in candidate_layouts(girder_cfg):
+        variant = _variant(girder_cfg, layout)
+        geometry = geometry_for(variant)
+        params = clear_span_check_params(variant)
+        bounds = _bound_demands(variant, geometry, {GIRDER: girder_shapes})
+        if GIRDER not in bounds:   # no interior girder members to bound
+            return girder_cfg
+        _, ok, uc = _screen_group(girder_shapes, [bounds[GIRDER]], params)
+        if ok or uc <= _PROOF_MARGIN:
+            return girder_cfg      # this layout might carry a W girder
+    return _with_roof_system(config, "truss")
+
+
+def _merge_second_order(first: list[MemberDemand],
+                        second: list[MemberDemand]) -> list[MemberDemand]:
+    """Second-order verification demands: P-Delta AXIAL forces (enveloped
+    with first order), everything else first-order.
+
+    In a non-sway gravity truss the system second-order effect is an axial
+    redistribution — that is what the geometrically nonlinear solve is
+    trusted for. Member-level moment amplification (P-small-delta) is
+    covered by the Appendix 8 B1 factor inside check_member(), per AISC 360
+    C2's approximate-method allowance. Pynite's P-Delta moment recovery is
+    NOT usable here: for members with released ends it reports order-P*L
+    moments that a pin-ended two-force member cannot physically carry."""
+    merged = []
+    for d1, d2 in zip(first, second):
+        assert d1.name == d2.name
+        Pu = d2.Pu if abs(d2.Pu) > abs(d1.Pu) else d1.Pu
+        merged.append(replace(d1, Pu=Pu))
+    return merged
+
+
+def _verify_second_order(result: OptimizationResult) -> OptimizationResult:
+    """Second-order verification of a finished truss design (AISC 360 C2).
+
+    The search already screens with the Appendix 8 B1 amplifier (member
+    second order; B2 = 1 for this non-sway gravity model). This step
+    additionally re-solves the winning assignment geometrically nonlinear
+    (Pynite P-Delta) and re-runs every member check with the second-order
+    axial forces (see _merge_second_order) — the reported check table IS
+    that certification. If a member fails, one corrective re-screen picks
+    heavier sections against the second-order demands and re-verifies."""
+    config = result.config
+    geometry, params, analyze = _prepare(config)
+    candidates = _candidates_by_group(config)
+    by_name = {g: {s.name: s for s in cands} for g, cands in candidates.items()}
+    assignment = {g: by_name[g][name] for g, name in result.sections.items()}
+    info = {"method": "P-Delta axial + App. 8 B1", "verified": False,
+            "passes": 0, "sections_changed": False, "note": ""}
+
+    def second_order_demands(assignment):
+        first = analyze(geometry, assignment, config, check_stability=False)
+        second = analyze(geometry, assignment, config,
+                         check_stability=False, second_order=True)
+        return _merge_second_order(first, second)
+
+    try:
+        demands = second_order_demands(assignment)
+        info["passes"] = 1
+        table = check_all(demands, assignment, params)
+        if not bool(table["PASS"].all()):
+            grouped = _group_demands(demands, list(candidates))
+            new_assignment = {g: _screen_group(cands, grouped[g], params)[0]
+                              for g, cands in candidates.items()}
+            info["sections_changed"] = any(
+                new_assignment[g] is not assignment[g] for g in assignment)
+            assignment = new_assignment
+            demands = second_order_demands(assignment)
+            info["passes"] = 2
+            table = check_all(demands, assignment, params)
+        info["verified"] = bool(table["PASS"].all())
+    except RuntimeError as exc:
+        # divergence: keep the first-order design, flagged unverified
+        info["note"] = str(exc)
+        result.second_order = info
+        return result
+
+    verified = _build_result(config, geometry, assignment, demands, params,
+                             result.iterations, result.converged,
+                             feasible=info["verified"])
+    verified.second_order = info
+    return verified
 
 
 def _prescreen(config: ClearSpanConfig, layouts: list[tuple[int, float, int]],
@@ -830,6 +1008,12 @@ def optimize_layout(config: ClearSpanConfig, method: str = "iterative",
             "explicitly — use optimize() for it."
         )
 
+    was_auto = config.roof_system == "auto"
+    config = _resolve_roof_system(config)
+    if verbose and was_auto and config.is_truss:
+        print("[roof] no W girder candidate can carry the span in any "
+              "layout — switching to the Pratt truss roof system")
+
     layouts = candidate_layouts(config)
     if prescreen:
         analyzed, skipped, hopeless = _prescreen(config, layouts, verbose)
@@ -885,7 +1069,28 @@ def optimize_layout(config: ClearSpanConfig, method: str = "iterative",
             fallback, fallback_uc = result, worst_uc
 
     chosen = best if best is not None else fallback
+    # second-order certification of the winner only: the search screened with
+    # the B1 amplifier; the final truss design is re-verified by a real
+    # P-Delta solve (and rebuilt from it, so the table IS second-order)
+    if chosen.feasible and chosen.config.is_truss:
+        chosen = _verify_second_order(chosen)
     chosen.layout_search = search
+
+    # "auto" safety net: the girder proof is one-sided (bounds can only rule
+    # layouts OUT), so a girder search can still end infeasible for reasons
+    # the statics cannot see. With truss candidates available, the truss
+    # search gets its turn before reporting failure.
+    if (was_auto and not chosen.feasible and not config.is_truss
+            and config.has_truss_groups):
+        if verbose:
+            print("[roof] no feasible W-girder design — retrying with the "
+                  "Pratt truss roof system")
+        truss_result = optimize_layout(
+            _with_roof_system(config, "truss"), method=method,
+            max_iterations=max_iterations, verbose=verbose, n_jobs=n_jobs,
+            prescreen=prescreen)
+        if truss_result.feasible:
+            return truss_result
     return chosen
 
 

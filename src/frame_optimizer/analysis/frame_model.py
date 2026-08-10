@@ -12,6 +12,10 @@ Modeling scheme (see README "Engineering assumptions"):
   moment-released at their ends, these restraints attract no member force
   under gravity — they only remove mechanism DOFs. Lateral stability is
   explicitly out of scope (assumed provided by a separate system).
+* Exception: truss nodes are flagged free_dx — a truss cannot develop chord
+  or diagonal axial force if its panel points are held horizontally, so each
+  truss frame is supported pin (one bearing keeps DX) + roller (the other
+  bearing and all panel nodes release it). DZ stays restrained everywhere.
 * Loads: 'D' = member self-weight + superimposed dead on beams (one-way
   tributary line load); 'L' = live on beams. LRFD combos 1.4D and 1.2D+1.6L
   for strength; D+L and L for serviceability.
@@ -46,7 +50,9 @@ class MemberDemand:
     Sign convention: Pu > 0 tension, Pu < 0 compression (opposite of Pynite).
     Deflections are relative to the member-end chord, service-level, positive
     down. Ix_used records the analysis section so the checker can project
-    deflections onto other candidate sections (delta ~ 1/I).
+    deflections onto other candidate sections (delta ~ 1/I); A_used likewise
+    for members whose deflection is governed by axial stiffness (truss
+    chords: delta ~ 1/A).
     """
     name: str
     group: str
@@ -61,6 +67,8 @@ class MemberDemand:
     Vu: float            # kip, max |web shear| along the member
     defl_total_in: float  # under D+L
     defl_live_in: float   # under L
+    A_used: float = 0.0   # analysis-section area; 0 = not recorded (pseudo-
+                          # demands that never take the axial deflection scale)
 
 
 def _line_load_kip_in(kpa: float, trib_width_in: float) -> float:
@@ -90,7 +98,8 @@ def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
         # and clamping would falsify its moments and deflections.
         rot = not node.free_rotations
         model.def_support(node.name,
-                          support_DX=True, support_DY=node.is_base, support_DZ=True,
+                          support_DX=not node.free_dx,
+                          support_DY=node.is_base, support_DZ=True,
                           support_RX=rot, support_RY=rot, support_RZ=rot)
 
     for m in geometry.members:
@@ -175,6 +184,7 @@ def extract_demands(model: FEModel3D, geometry: FrameGeometry,
         demands.append(MemberDemand(
             name=m.name, group=m.group, story=m.story, length_in=m.length_in,
             trib_width_in=m.trib_width_in, shape_used=shape.name, Ix_used=shape.Ix,
+            A_used=shape.A,
             Pu=Pu, Mux=Mux, Muy=Muy, Vu=Vu,
             defl_total_in=defl_total, defl_live_in=defl_live,
         ))
@@ -212,14 +222,36 @@ def solve_model(model: FEModel3D, check_stability: bool = True) -> None:
                       sparse=True)
 
 
+def solve_model_second_order(model: FEModel3D, check_stability: bool = True) -> None:
+    """Geometrically nonlinear (P-Delta) solve of every load combination.
+
+    Runs once on a search winner as the second-order verification (AISC 360
+    C2), so the ~40% reaction-recovery overhead of Pynite's public entry
+    point is irrelevant — no fast path needed. Service combos are solved
+    second-order too, which can only increase the checked deflections."""
+    try:
+        model.analyze_PDelta(check_stability=check_stability, sparse=True)
+    except Exception as exc:   # Pynite raises plain Exception on divergence
+        raise RuntimeError(
+            "P-Delta analysis did not converge — the design could not be "
+            f"verified second-order ({exc})"
+        ) from exc
+
+
 def analyze_frame(geometry: FrameGeometry, assignment: dict[str, WShape],
                   config: FrameConfig,
-                  check_stability: bool = True) -> list[MemberDemand]:
+                  check_stability: bool = True,
+                  second_order: bool = False) -> list[MemberDemand]:
     """Build, solve, and extract demands for one candidate assignment.
 
     check_stability=False skips Pynite's singularity scan; safe when the
     same geometry has already solved cleanly once (stability depends on the
-    support/release topology, not on which W-shapes are assigned)."""
+    support/release topology, not on which W-shapes are assigned).
+    second_order=True runs the iterative P-Delta solve instead of the fast
+    first-order path (used to verify a finished design, not to search)."""
     model = build_model(geometry, assignment, config)
-    solve_model(model, check_stability=check_stability)
+    if second_order:
+        solve_model_second_order(model, check_stability=check_stability)
+    else:
+        solve_model(model, check_stability=check_stability)
     return extract_demands(model, geometry, assignment)

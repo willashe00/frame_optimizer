@@ -161,11 +161,14 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
 def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
     """Type-specific plan/elevation summary of the building."""
     if isinstance(config, ClearSpanConfig):
-        return {
+        roof = ("Pratt truss (top-chord bearing) spanning frame to frame"
+                if config.is_truss else "girders")
+        block = {
             "building_type": "clear_span",
             "description": ("transverse clear-span frames, no interior "
-                            "columns; one-way deck -> purlins -> girders "
+                            f"columns; one-way deck -> purlins -> {roof} "
                             "-> perimeter columns"),
+            "roof_system": "truss" if config.is_truss else "girder",
             "span_m": _r(config.span_m),
             "length_m": _r(config.length_m),
             "eave_height_m": _r(config.eave_height_m),
@@ -174,8 +177,18 @@ def _building_block(config: FrameConfig | ClearSpanConfig) -> dict:
             "n_purlin_lines": config.n_purlin_spaces + 1,
             "purlin_spacing_m": _r(config.purlin_spacing_actual_m),
             "end_wall_columns_per_end": config.end_wall_columns,
-            "girder_camber_mm": _r(config.girder_camber_mm, 1),
         }
+        if config.is_truss:
+            block.update({
+                "truss_bearing": "top_chord",
+                "truss_depth_m": _r(config.truss_depth_actual_m),
+                "n_truss_panels": config.n_truss_panels,
+                "truss_panel_length_m": _r(config.truss_panel_m),
+                "truss_camber_mm": _r(config.truss_camber_mm, 1),
+            })
+        else:
+            block["girder_camber_mm"] = _r(config.girder_camber_mm, 1)
+        return block
     return {
         "building_type": "grid_frame",
         "description": "conventional column grid, one-way deck on floor beams",
