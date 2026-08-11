@@ -67,6 +67,8 @@ span², so spanning the long way is never lighter).
 
 ### Pratt-truss roof for very long spans
 
+> Design process with the governing math: **[docs/truss_design.md](docs/truss_design.md)**
+
 When the clear span outgrows every rolled W-shape (`roof_system="auto"`, the
 default, proves this with the FEA-free girder bound before any solve — or set
 `roof_system="truss"` explicitly), the interior girders are replaced by
