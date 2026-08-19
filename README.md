@@ -2,7 +2,10 @@
 
 Gravity-load optimizer for fully pinned steel frames (AISC W-shapes).
 Pipeline: [Pynite](https://github.com/JWock82/Pynite) 3-D FEA → AISC 360 LRFD
-checks → lightest-section search over candidate section combinations.
+checks → lightest-section search over candidate section combinations →
+pinned-base column baseplates
+([src/baseplate_design/](src/baseplate_design/)) off the resulting base
+reactions.
 
 Primary entry point: **[gravity_design.py](gravity_design.py)** — clear-span
 industrial building (equipment enclosure, no interior columns).
@@ -41,7 +44,14 @@ span², so spanning the long way is never lighter).
    candidate W-shapes per design group, roof loads.
 2. Calls `optimize_layout(config)` — derives the layout from the footprint
    and returns the lightest feasible `OptimizationResult`.
-3. Emits (to the git-ignored `output/` directory):
+3. Calls `design_uniform_baseplate(result, baseplate_config)` — the column
+   baseplates follow automatically from the finalized member design
+   ([src/baseplate_design/](src/baseplate_design/)): every column is designed,
+   the dimensions are enveloped, and the single enveloped plate is re-checked
+   against every column. The heaviest column governs bearing and plate
+   flexure; the **lightest** governs anchor rod shear, because the
+   shear-friction credit μ·P is what its rods do *not* have to carry.
+4. Emits (to the git-ignored `output/` directory):
 
 | Output | Content | Consumer |
 |---|---|---|
@@ -49,161 +59,18 @@ span², so spanning the long way is never lighter).
 | `member_checks_clear_span.csv` | one row per member, all unity checks (kN, kN·m, m) | review |
 | `baseplate_inputs.json` | per-column footprint + base reactions (mm, kN) | baseplate module |
 | `building_configuration.json` | full geometry + sections (mm, m, kg, kPa, MPa) | IFC authoring module |
-| `clear_span_wireframe.html` | interactive 3-D wireframe (m, kN) | visual check (needs `[viz]`) |
-
-## Building topology
-
-- X = clear-span direction, Z = building length, Y = up. Origin at base of
-  the x=0, z=0 column.
-- Transverse frames at `length/(n_frames-1)` spacing. Each frame: two
-  perimeter columns + one clear-span roof girder. Interior stays empty.
-- Purlins run in Z between girders, spaced along the span. Eave lines carry
-  half tributary width.
-- Optional gable columns on the two end walls only (count chosen by the
-  layout search). They support the end girders, which then form their own
-  lighter design group — providing `end_girder_candidates` is what enables
-  this option.
-- One-way load path: deck → purlins → girders → perimeter columns.
-
-### Pratt-truss roof for very long spans
-
-> Design process with the governing math: **[docs/truss_design.md](docs/truss_design.md)**
-
-When the clear span outgrows every rolled W-shape (`roof_system="auto"`, the
-default, proves this with the FEA-free girder bound before any solve — or set
-`roof_system="truss"` explicitly), the interior girders are replaced by
-parallel-chord **Pratt trusses**:
-
-- **Top-chord bearing**: the top chord stays at the girder elevation and
-  bears on the same column tops; the truss depth (`truss_depth_m`, default
-  span/12) hangs below the eave. Roof plane, purlins, end walls, and columns
-  are untouched — interior clearance under the truss is reduced by the depth.
-- Even panel count with panel length ≈ depth (diagonals ≈ 45°); the bottom
-  chord ends at the first interior panel points and the end diagonals carry
-  the support shear (no members on the column axis). Diagonals are in
-  tension under gravity, verticals in compression.
-- The top chord is one continuous full-span member (like the girder it
-  replaces), so its chord-relative sag IS the truss deflection check and
-  `truss_camber_mm` is credited the same way girder camber is.
-- Second order: the search amplifies compression-chord moments with the
-  AISC Appendix 8 **B1** factor (B2 = 1, non-sway gravity); the winning
-  design is then re-verified with second-order **axial** forces from a
-  Pynite P-Delta solve and the check table is rebuilt from them (see
-  `_verify_second_order`). The summary reports the verification outcome.
-- End frames keep their gable-column-propped W end girders
-  (`end_girder_candidates` is required in truss mode).
-
-Design groups (one shared section per group; heaviest-loaded member governs):
-
-| Group | Members | Notes |
-|---|---|---|
-| `column` | perimeter + gable columns | KL/r ≤ 200 check, no deflection check |
-| `girder` | interior clear-span girders | Lb = purlin spacing, camber credit |
-| `end_girder` | the two end-wall girders | own candidates; lighter when gable columns exist |
-| `purlin` | roof purlins | `purlin_Lb_m=0` = deck-braced top flange |
-| `top_chord` | truss top chords (truss mode) | KLx = panel, KLy/Lb = purlin spacing, B1, camber, deflection check (δ ∝ 1/A) |
-| `bottom_chord` | truss bottom chords (truss mode) | tension, L/r ≤ 300; braced out-of-plane at `bottom_chord_brace_spacing_m` (assumed struts, default every panel) |
-| `truss_web` | truss verticals + diagonals (truss mode) | one shared shape; pin-ended, checked over own length |
-
-## Pipeline
-
-`optimize_layout(config)` in
-[optimizer.py](src/frame_optimizer/optimization/optimizer.py) is the
-clear-span entry point: it enumerates every realistic layout for the
-footprint (`candidate_layouts()` in `clear_span.py`), runs `optimize()` on
-each, and returns the lightest feasible design (weight ties break toward
-fewer members). Layout fields set explicitly on the config are pinned and
-excluded from the search. Per layout, `optimize(config)`:
-
-1. **Geometry** — [clear_span.py](src/frame_optimizer/clear_span.py)
-   `build_clear_span_geometry()`: nodes + members tagged with group and
-   tributary width. Pure data (`FrameGeometry`), no FEA objects.
-2. **Analysis** — [frame_model.py](src/frame_optimizer/analysis/frame_model.py)
-   `analyze_frame()`: one Pynite model for the whole building. All member
-   ends moment-released (fully pinned). Load cases D (self-weight + SDL) and
-   L; combos 1.4D, 1.2D+1.6L (strength), D+L, L (deflection). Returns one
-   `MemberDemand` per member: enveloped Pu, Mux, Muy, Vu + chord-relative sag.
-3. **Checks** — [checker.py](src/frame_optimizer/design/checker.py)
-   `check_member()`: unity checks per member (axial, flexure w/ LTB, shear,
-   H1 interaction, deflection, slenderness). Per-group knobs in `GroupRules`.
-   Strength equations are pure functions in
-   [aisc_strengths.py](src/frame_optimizer/design/aisc_strengths.py).
-4. **Search** — fixed-point iteration, not brute force. Demands are nearly
-   statically determinate (only self-weight feedback), so: FEA → pick
-   lightest passing candidate per group → re-FEA → repeat until stable.
-   Typically 1–2 solves. Last iteration doubles as certification.
-   `method="exhaustive"` cross-checks by enumeration (small lists only).
-5. **Result** — [results.py](src/frame_optimizer/results.py):
-   `OptimizationResult` with `sections`, `total_weight_kg`, `member_table`
-   (DataFrame), `group_summary`, `feasible`/`converged` flags, and the config.
-
-`evaluate(config, {"girder": "W30X108", ...})` checks one explicit assignment
-without searching.
-
-### Runtime engineering
-
-**Guarantee: whenever a feasible design exists, the search returns the same
-lightest one it always would.** Work is only ever skipped once it is certain
-it cannot change that answer. Every design is still certified by a real FEA
-solve and the full AISC check table.
-
-- **FEA-free infeasibility proof** (`_infeasibility_proof`): before any
-  solve, closed-form statics put a rigorous **lower bound** on each group's
-  demands — the load the structure must carry at minimum, with all
-  self-weight dropped (interior purlin reactions as point loads on the
-  girder, `M = Σ P·a/2`, `δ = Σ P·a(3L²−4a²)/48EI`). Capacities are
-  unchanged (same shape, rules and member length), so a candidate failing
-  the bound must fail the real demands. When no candidate of some group can
-  clear its bound, that layout is infeasible with certainty and is skipped.
-  This also catches demand-independent limit states exactly: `KL/r ≤ 200`
-  depends only on length and shape, so an over-tall column rules out every
-  layout at once. Rejection requires clearing 1.0 by a 2% margin
-  (`_PROOF_MARGIN`), covering solver round-off and deflection sampling: a
-  144-configuration sweep put the worst bound overshoot at 1.9×10⁻³, an
-  order of magnitude inside the margin. Disable with
-  `optimize_layout(prescreen=False)` to force the exhaustive path.
-- **Statics pre-sizing** (`_presize_clear_span`): the same determinate load
-  path gives the fixed-point loop its starting assignment, so it begins at
-  (usually) the answer and converges in 1–2 solves instead of 3–4. Only a
-  starting guess; the certified table is unaffected.
-- **Exact demand deduplication** (`_distinct_demands`): symmetric structures
-  produce many members whose demands are bit-identical (all interior purlins
-  of a bay, both columns of a frame). Screening one of each is exactly
-  equivalent to screening all — equality is exact, so near-identical values
-  are still checked separately.
-- **Warm starts across layouts**: adjacent candidate layouts differ little,
-  so each layout seeds its search from the previous winner
-  (`optimize(..., warm_start=...)`).
-- **Reactions-free screening solves** (`solve_model` in frame_model.py):
-  Pynite's `analyze()` spends ~40% of its time recovering reactions the
-  optimizer never reads. Member results are identical; the baseplate export
-  still uses the full `analyze()` for its one reactions solve.
-- **Parallel layout search**: independent layouts run in worker processes
-  (`optimize_layout(..., n_jobs=...)`). Measured best-of-3, parallel wins at
-  every size tried — 1.7× on a 15 × 20 m footprint up to 3.4× on 30 × 45 m —
-  so `_run_layouts` only falls back to serial when there is genuinely nothing
-  to split (a single chunk, or work too small to repay the ~1.5 s per-worker
-  import). Parallel and serial runs produce identical designs; anything that
-  prevents multiprocessing falls back to serial automatically.
-- **Fork-bomb guard**: on spawn platforms every worker re-imports the
-  caller's `__main__`, so a script calling `optimize_layout()` at module
-  level without an `if __name__ == "__main__"` guard would have each worker
-  start another pool. `_run_layouts` refuses to spawn from inside a worker,
-  making such a script merely slow instead of fatal. Guard your entry point
-  anyway — `gravity_design.py` does.
-
-One behavioral note, for infeasible footprints only: when *no* layout is
-feasible there is no design to find, only a diagnosis to report. The
-optimizer analyzes the closest few layouts (`_HOPELESS_ANALYSES`) and
-returns the best of those, so the layout named in the report can differ from
-what an exhaustive search would name — both are infeasible, and the
-governing limit states and check table are real either way.
+| `baseplate_design.json` | the one baseplate detail + per-column checks (mm, kN, MPa) | fabrication / IFC |
+| `baseplates.summary()` (stdout) | plate size, governing column per limit state | humans |
+| `clear_span_wireframe.html` | interactive 3-D wireframe + baseplates (m, kN) | visual check (needs `[viz]`) |
 
 ## JSON exports
 
-[export.py](src/frame_optimizer/export.py). Every numeric key has an SI unit
-suffix (`_mm`, `_m`, `_kN`, `_kPa`, `_MPa`, `_kg`, `_kg_m`). Both files carry
-`schema` + `schema_version` (**2** — version 1 used US customary units).
+[export.py](src/frame_optimizer/export.py) and
+[baseplate_design/export.py](src/baseplate_design/export.py). Every numeric
+key has an SI unit suffix (`_mm`, `_m`, `_kN`, `_kPa`, `_MPa`, `_kg`,
+`_kg_m`). Every file carries `schema` + `schema_version`
+(`building_configuration` **2** — version 1 used US customary units;
+`baseplate_inputs` **3** — version 3 added `base_shear_kN`).
 
 **`baseplate_inputs.json`** — `write_baseplate_json(result)`. One entry per
 column landing on a base (includes gable columns). Per column:
@@ -213,11 +80,14 @@ column landing on a base (includes gable columns). Per column:
 - `centerline_location`: base-node x/y/z in mm
 - `axial_compression_kN`: governing LRFD value + per-combo breakdown
   (`1.4D`, `1.2D+1.6L`, and service `D`, `L`, `D+L`)
+- `base_shear_kN`: horizontal reaction resultant, which is numerical **zero**
+  by construction — the frame is fully pinned and its DX/DZ restraints only
+  remove mechanism DOFs. Reported so that fact is visible to consumers rather
+  than assumed; design shear must be stated externally.
 
 Reactions come from one extra linear solve of the final assignment; vertical
 base reaction = column axial. Compression-positive. Base condition: pinned.
-No lateral shear — out of model scope. Column web orientation not defined by
-the gravity model.
+Column web orientation not defined by the gravity model.
 
 **`building_configuration.json`** — `write_building_json(result)`:
 
@@ -229,7 +99,23 @@ the gravity model.
   connectivity, group, section)
 - material (MPa), loads (kPa) + combos, connection assumption, headline results
 
-## Engineering assumptions (must-read)
+**`baseplate_design.json`** — `write_baseplate_design_json(design)`:
+
+- `design_basis`: codes, φ factors, methodology, and the limit states
+  explicitly **excluded** — read this before using the file
+- `inputs`: concrete, pier, plate/rod materials, detailing minimums,
+  fabrication increments (everything from `BaseplateConfig`)
+- `baseplate`: the single detail applied everywhere — B × N × tp in mm *and*
+  inches, bearing area, mass, rod count/diameter/edge distance, and rod
+  `positions_mm` as x/y offsets from the column centerline (so a plate can be
+  placed directly on the base nodes of `building_configuration.json`)
+- `governing`: which column drives each limit state, its Pu/Vu, and why they
+  differ
+- `verification`: `all_columns_pass`, envelope DCRs, `failing_columns`
+- `columns`: every column base — demands, capacities, cantilevers, the three
+  DCRs, governing limit state, `PASS`
+
+## Engineering assumptions
 
 - **Gravity only. Fully pinned.** The frame is a lateral mechanism; nodes are
   restrained in DX/DZ/rotations purely to remove mechanism DOFs. Valid only
@@ -261,15 +147,17 @@ the gravity model.
 - Deflection defaults are the strict floor ratios (L/360 live, L/240 total);
   relax per group via `girder_defl_*_ratio` / `purlin_defl_*_ratio` when
   roof limits apply.
+- Baseplates: pinned base, compression + shear only (AISC 360-22 + DG1 2nd
+  Ed.). The plate carries no moment, and rod tension / concrete breakout
+  (ACI 318 Ch. 17), welds and grout are **not** designed — the JSON lists
+  every exclusion. The shear-friction credit rides on the *minimum*
+  coincident compression (0.9D), never on Pu. The design shear is an input
+  (`design_base_shear_kN`), not a model output, because the gravity model has
+  none; while it is 0 the rods sit at their 3/4 in detailing minimum.
+  In the wireframe the plates are drawn at true scale with their rods, and
+  hovering one shows its dimensions and all three DCRs; the plan orientation
+  there is an assumption, since the model does not fix column web direction.
 - Not modeled: crane loads, hanging equipment, drifted snow, connections.
-
-## Section database
-
-[sections/data/aisc_w_shapes.csv](src/frame_optimizer/sections/) — 283
-W-shapes from AISC Shapes Database v15.0 (US units; the backend works in
-kips/inches, so the catalog is used as-is — only the interface is SI).
-`rts`, `ho` computed from their exact definitions. Regenerate with
-[tools/prepare_sections_csv.py](tools/prepare_sections_csv.py).
 
 ## Layout
 
@@ -283,25 +171,24 @@ src/frame_optimizer/
 ├── design/aisc_strengths.py     AISC 360 capacity equations (pure functions)
 ├── design/checker.py            check_member(), GroupRules, CheckParams
 ├── optimization/optimizer.py    layout search + iterative/exhaustive section search
-├── export.py                    baseplate + building-configuration JSON writers
+├── export.py                    baseplate-inputs + building-configuration JSON writers
 ├── results.py                   OptimizationResult + summary()
 └── sections/                    W-shape catalog: CSV + WShape loader
-modeler/                         plotly wireframe (optional, delete-able)
+src/baseplate_design/            pinned-base baseplates, off the back of the above
+├── config.py                    BaseplateConfig (SI in, kip/inch internally)
+├── baseplate_design.py          AISC 360 / DG1 design + check of ONE plate
+├── uniform_design.py            governing column -> one plate for every column
+├── export.py                    baseplate-design JSON writer
+└── __main__.py                  `python -m baseplate_design [baseplate_inputs.json]`
+modeler/                         plotly wireframe + baseplates (optional, delete-able)
 tests/                           hand-calc, AISC Manual anchors, regression
 ```
 
 ## Tests
 
+To run the pytests, follow the commands below:
+
 ```bash
 pip install pytest
 pytest tests/
 ```
-
-Coverage: FEA vs closed-form statics (wL²/8, wL/2, 5wL⁴/384EI, tributary
-axials), strength functions vs AISC Manual anchors, clear-span statics
-closure, iterative-vs-exhaustive agreement, warm-start invariance, and the
-screening invariants — that the statics bounds never exceed the FEA demands
-(the property the pre-screen's correctness rests on) and that
-`prescreen=True` picks the same design as the exhaustive path. Test configs
-feed exact SI conversions of the imperial anchor values, so the hand
-calculations remain in the backend's native kip/inch system.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "frame_optimizer"
 version = "0.1.0"
-description = "Gravity-load optimizer for fully pinned steel frames: Pynite FEA + AISC 360 LRFD checks over W-shape candidates"
+description = "Gravity-load optimizer for fully pinned steel frames: Pynite FEA + AISC 360 LRFD checks over W-shape candidates, with pinned-base baseplate design (AISC DG1) off the resulting base reactions"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

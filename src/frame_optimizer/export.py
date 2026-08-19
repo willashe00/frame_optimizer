@@ -14,6 +14,7 @@ Two machine-readable views of the optimized structure:
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from .analysis import build_model
@@ -27,6 +28,8 @@ from .results import OptimizationResult
 from .sections import WShape, get_shapes
 
 _SCHEMA_VERSION = 2
+# baseplate_inputs is versioned separately: v3 added per-column base shear.
+_BASEPLATE_SCHEMA_VERSION = 3
 
 _IN2_TO_MM2 = IN_TO_MM ** 2
 
@@ -71,22 +74,33 @@ def _base_columns(geometry: FrameGeometry) -> list[tuple[MemberInfo, NodeInfo]]:
             if m.group == COLUMN and m.i_node in base_nodes]
 
 
-def _base_reactions_fy(result: OptimizationResult, geometry: FrameGeometry,
-                       assignment: dict[str, WShape]) -> dict[str, dict[str, float]]:
-    """Vertical base reaction (kN, compression-positive) per node per combo.
+def _base_reactions(result: OptimizationResult, geometry: FrameGeometry,
+                    assignment: dict[str, WShape]
+                    ) -> dict[str, dict[str, dict[str, float]]]:
+    """Base reactions (kN) per node per combo, as {node: {'fy': ..., 'shear': ...}}.
 
     One linear solve of the final assignment; RxnFY is positive upward, i.e.
     equal to the axial compression the column delivers to the baseplate.
+    'shear' is the horizontal resultant sqrt(RxnFX^2 + RxnFZ^2); under gravity
+    on this fully pinned model it is numerical zero (the DX/DZ restraints only
+    remove mechanism DOFs), and reporting it is what proves that.
     (This is the one solve that needs Pynite's reaction recovery, so it uses
     the public analyze().)
     """
     model = build_model(geometry, assignment, result.config)
     model.analyze(check_stability=True, check_statics=False, sparse=True)
     combos = list(STRENGTH_COMBOS) + [SERVICE_TOTAL_COMBO[0], SERVICE_LIVE_COMBO[0]]
-    return {
-        node.name: {c: model.nodes[node.name].RxnFY[c] * KIP_TO_KN for c in combos}
-        for node in geometry.nodes if node.is_base
-    }
+    reactions = {}
+    for node in geometry.nodes:
+        if not node.is_base:
+            continue
+        n = model.nodes[node.name]
+        reactions[node.name] = {
+            "fy": {c: n.RxnFY[c] * KIP_TO_KN for c in combos},
+            "shear": {c: math.hypot(n.RxnFX[c], n.RxnFZ[c]) * KIP_TO_KN
+                      for c in combos},
+        }
+    return reactions
 
 
 def baseplate_inputs(result: OptimizationResult) -> dict:
@@ -94,7 +108,7 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
     config = _require_config(result)
     geometry = geometry_for(config)
     assignment = _assignment(result)
-    reactions = _base_reactions_fy(result, geometry, assignment)
+    reactions = _base_reactions(result, geometry, assignment)
 
     strength_combos = list(STRENGTH_COMBOS)
     total_combo = SERVICE_TOTAL_COMBO[0]
@@ -102,7 +116,8 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
 
     columns = []
     for member, base in sorted(_base_columns(geometry), key=lambda mb: mb[0].name):
-        rxn = reactions[base.name]
+        rxn = reactions[base.name]["fy"]
+        shear = reactions[base.name]["shear"]
         by_combo = {c: _r(rxn[c]) for c in strength_combos}
         # linear analysis: service dead = (D+L) - L
         by_combo["D"] = _r(rxn[total_combo] - rxn[live_combo])
@@ -122,11 +137,15 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
                 "Pu_governing_lrfd": _r(max(rxn[c] for c in strength_combos)),
                 "by_combo": by_combo,
             },
+            "base_shear_kN": {
+                "Vu_governing_lrfd": _r(max(shear[c] for c in strength_combos)),
+                "by_combo": {c: _r(shear[c]) for c in strength_combos},
+            },
         })
 
     return {
         "schema": "frame_optimizer/baseplate_inputs",
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": _BASEPLATE_SCHEMA_VERSION,
         "base_condition": "pinned",
         "units": {"length": "mm", "force": "kN", "stress": "MPa"},
         "sign_convention": (
@@ -136,6 +155,10 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
         "notes": [
             "Gravity loads only; lateral (wind/seismic) base shear is out of "
             "scope of this model and must come from the lateral system design.",
+            "base_shear_kN is the horizontal reaction this model actually "
+            "produces, which is numerical zero by construction: the frame is "
+            "fully pinned and its DX/DZ restraints exist only to remove "
+            "mechanism DOFs. Design shear must be stated externally.",
             "Pu_governing_lrfd is the envelope over the LRFD strength combos "
             f"{strength_combos}; 'D', '{total_combo}', and '{live_combo}' are "
             "unfactored service-level values.",
@@ -273,10 +296,16 @@ def _write_json(data: dict, path: str | Path) -> Path:
     return path
 
 
-def write_baseplate_json(result: OptimizationResult,
+def write_baseplate_json(result: OptimizationResult | dict,
                          path: str | Path = "baseplate_inputs.json") -> Path:
-    """Write baseplate_inputs(result) to `path`; returns the path written."""
-    return _write_json(baseplate_inputs(result), path)
+    """Write baseplate_inputs(result) to `path`; returns the path written.
+
+    An already-built baseplate_inputs() dict is accepted too, so a caller that
+    also needs the data (the baseplate_design module does) can build it once
+    and pay for only one reaction solve.
+    """
+    data = result if isinstance(result, dict) else baseplate_inputs(result)
+    return _write_json(data, path)
 
 
 def write_building_json(result: OptimizationResult,

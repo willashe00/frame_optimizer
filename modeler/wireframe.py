@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import plotly.graph_objects as go
 
 from frame_optimizer import geometry_for
-from frame_optimizer.config import IN_TO_M
+from frame_optimizer.config import IN_TO_M, IN_TO_MM, KIP_TO_KN
 from frame_optimizer.geometry import BEAM, COLUMN
 from frame_optimizer.results import OptimizationResult
+
+if TYPE_CHECKING:                      # type-checking only: drawing the
+    from baseplate_design import (BaseplateCheck,  # baseplates is optional,
+                                  ColumnDemand,    # so this module never
+                                  UniformBaseplateDesign)  # imports it at run time
 
 _GROUP_COLOR = {COLUMN: "#2a78d6", BEAM: "#1baf7a",
                 "girder": "#1baf7a", "purlin": "#eda100",
@@ -30,12 +36,22 @@ _MUTED = "#898781"
 _GRID = "#e1e0d9"
 _CRITICAL = "#d03b3b"
 
+_PLATE = "#6b7280"        # steel plate fill
+_PLATE_EDGE = "#374151"   # its outline and anchor rods
+
 _FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 
 # hover targets per member (evenly spaced, endpoints excluded so joints stay
 # unambiguous) and the DCR below which a check row is omitted as negligible
 _HOVER_SAMPLES = 9
 _SHOW_UC = 0.01
+
+# Baseplate plan orientation. The gravity model does not define column web
+# direction (all sections are vertical W-shapes), so the drawing has to pick
+# one: N (the plate dimension parallel to the column depth d) is laid along
+# model X, the clear-span/girder direction, which is how a portal column is
+# normally set. The hover card says so. Swap these to draw the other way.
+_PLATE_N_ALONG_X = True
 
 
 def _notna(v) -> bool:
@@ -79,6 +95,172 @@ def _hover_card(name: str, group: str, section: str, row) -> str:
     return "<br>".join(lines)
 
 
+def _baseplate_hover_card(design: "UniformBaseplateDesign",
+                          demand: "ColumnDemand",
+                          check: "BaseplateCheck") -> str:
+    """Per-baseplate design summary: the plate itself, this column's demands,
+    and every limit state with its DCR.
+
+    The plate is identical at every base, so the card also says which column
+    actually drove each dimension — that is the whole point of the uniform
+    design, and it is not visible from any single plate.
+    """
+    plate = design.plate
+    gov = design.governing_column
+    verdict = "PASS" if check.passes else "<b>FAIL</b>"
+    orient = "N along X" if _PLATE_N_ALONG_X else "N along Z"
+
+    lines = [
+        f"<b>baseplate @ {demand.column_id}</b> — pinned · {demand.section_name}",
+        f"plate <b>{plate.B * IN_TO_MM:,.0f} × {plate.N * IN_TO_MM:,.0f} × "
+        f"{plate.tp * IN_TO_MM:,.1f} mm</b> "
+        f"({plate.B:g} × {plate.N:g} × {plate.tp:g} in)",
+        f"{plate.n_rods} − {plate.d_rod * IN_TO_MM:,.1f} mm anchor rods · "
+        f"edge {plate.edge_distance * IN_TO_MM:,.0f} mm",
+        f"A1 = {check.A1 * IN_TO_MM ** 2 / 1e6:,.3f} m² · "
+        f"plate mass {design.plate_mass_kg:,.1f} kg",
+        "",
+        f"Pu = {demand.Pu * KIP_TO_KN:,.1f} kN · "
+        f"Vu = {demand.Vu * KIP_TO_KN:,.1f} kN",
+        f"governing DCR <b>{check.max_dcr:.2f}</b> "
+        f"[{check.governing_limit_state}] · {verdict}",
+        f"bearing: {demand.Pu * KIP_TO_KN:,.1f} / {check.phiPp * KIP_TO_KN:,.0f} kN"
+        f" · DCR {check.bearing_dcr:.2f}",
+        f"plate flexure: t req {check.t_req * IN_TO_MM:,.1f} / "
+        f"{plate.tp * IN_TO_MM:,.1f} mm · DCR {check.flexure_dcr:.2f}",
+        f"rod shear: {demand.Vu * KIP_TO_KN:,.1f} / {check.phiVn * KIP_TO_KN:,.1f} kN"
+        f" · DCR {check.shear_dcr:.2f}",
+    ]
+    if demand.Vu > 0.0:
+        lines.append(f"  (friction credit {check.friction * KIP_TO_KN:,.1f} kN "
+                     f"on {demand.P_friction * KIP_TO_KN:,.0f} kN)")
+    lines += [
+        "",
+        f"<i>one detail at all {design.n_columns} bases · sized by "
+        f"{gov['plate flexure']}, rods by {gov['anchor rod shear']}</i>",
+        f"<i>plan orientation assumed ({orient}); the gravity model "
+        "does not fix it</i>",
+    ]
+    return "<br>".join(lines)
+
+
+def _plate_corners_m(demand: "ColumnDemand", plate) -> list[tuple[float, float]]:
+    """The plate's four plan corners in meters, as (model x, model z).
+
+    Centred on the column base node; the plate top is the base elevation, so
+    it is drawn flat at y = 0 and hangs below out of sight.
+    """
+    half_N, half_B = plate.N / 2.0 * IN_TO_M, plate.B / 2.0 * IN_TO_M
+    dx, dz = (half_N, half_B) if _PLATE_N_ALONG_X else (half_B, half_N)
+    cx, cz = demand.location_in[0] * IN_TO_M, demand.location_in[2] * IN_TO_M
+    return [(cx - dx, cz - dz), (cx + dx, cz - dz),
+            (cx + dx, cz + dz), (cx - dx, cz + dz)]
+
+
+def _rod_points_m(demand: "ColumnDemand", plate) -> list[tuple[float, float]]:
+    """Anchor rod plan positions in meters, as (model x, model z).
+
+    rod_positions() returns (x along B, y along N); the orientation switch
+    decides which of those becomes model X.
+    """
+    cx, cz = demand.location_in[0] * IN_TO_M, demand.location_in[2] * IN_TO_M
+    points = []
+    for along_B, along_N in plate.rod_positions():
+        dx, dz = ((along_N, along_B) if _PLATE_N_ALONG_X
+                  else (along_B, along_N))
+        points.append((cx + dx * IN_TO_M, cz + dz * IN_TO_M))
+    return points
+
+
+def _append_ring(xs: list, ys: list, zs: list,
+                 corners: list[tuple[float, float]], y0: float) -> None:
+    """Append a closed plan ring as a None-terminated scene polyline."""
+    for cx, cz in corners + [corners[0]]:
+        xs.append(cx)
+        ys.append(cz)          # model z -> scene y
+        zs.append(y0)          # model y (vertical) -> scene z
+    xs.append(None)
+    ys.append(None)
+    zs.append(None)
+
+
+def _add_baseplates(fig: go.Figure, design: "UniformBaseplateDesign") -> None:
+    """Draw every baseplate as a flat plate at its column base, with the
+    anchor rods and a hover card carrying the full design and its checks."""
+    plate = design.plate
+    checks = {c.column_id: c for c in design.checks}
+
+    # one Mesh3d for all plates: 4 vertices and 2 triangles each
+    mx, my, mz, i, j, k = [], [], [], [], [], []
+    ox, oy, oz = [], [], []          # outlines
+    rx, ry, rz = [], [], []          # anchor rods
+    hx, hy, hz, hover = [], [], [], []
+    fx, fy, fz = [], [], []          # outlines of plates that fail
+
+    for demand in design.demands:
+        check = checks[demand.column_id]
+        corners = _plate_corners_m(demand, plate)
+        y0 = demand.location_in[1] * IN_TO_M      # base elevation
+
+        base = len(mx)
+        for cx, cz in corners:
+            mx.append(cx)
+            my.append(cz)             # model z -> scene y
+            mz.append(y0)             # model y (vertical) -> scene z
+        i += [base, base]
+        j += [base + 1, base + 2]
+        k += [base + 2, base + 3]
+
+        # a plate that fails any check goes to the critical-color outline
+        outline = (ox, oy, oz) if check.passes else (fx, fy, fz)
+        _append_ring(*outline, corners, y0)
+
+        for cx, cz in _rod_points_m(demand, plate):
+            rx.append(cx)
+            ry.append(cz)
+            rz.append(y0)
+
+        hx.append(demand.location_in[0] * IN_TO_M)
+        hy.append(demand.location_in[2] * IN_TO_M)
+        hz.append(y0)
+        hover.append(_baseplate_hover_card(design, demand, check))
+
+    label = (f"baseplate · {plate.B * IN_TO_MM:,.0f}×{plate.N * IN_TO_MM:,.0f}"
+             f"×{plate.tp * IN_TO_MM:,.1f} mm")
+    fig.add_trace(go.Mesh3d(
+        x=mx, y=my, z=mz, i=i, j=j, k=k,
+        color=_PLATE, opacity=0.95, flatshading=True,
+        name=label, legendgroup="baseplate", showlegend=True,
+        hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=ox, y=oy, z=oz, mode="lines",
+        line=dict(color=_PLATE_EDGE, width=3),
+        legendgroup="baseplate", showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=rx, y=ry, z=rz, mode="markers",
+        marker=dict(size=2.5, color=_PLATE_EDGE),
+        name=f"{plate.n_rods} − {plate.d_rod * IN_TO_MM:,.1f} mm anchor rods",
+        legendgroup="baseplate", showlegend=False, hoverinfo="skip",
+    ))
+    if fx:
+        fig.add_trace(go.Scatter3d(
+            x=fx, y=fy, z=fz, mode="lines",
+            line=dict(color=_CRITICAL, width=6),
+            name="✕ baseplate fails checks", hoverinfo="skip",
+        ))
+
+    fig.add_trace(go.Scatter3d(
+        x=hx, y=hy, z=hz, mode="markers",
+        marker=dict(size=14, color=_PLATE, opacity=0.0),
+        legendgroup="baseplate", showlegend=False,
+        hovertemplate="%{customdata}<extra></extra>", customdata=hover,
+        hoverlabel=dict(bgcolor=_SURFACE, bordercolor=_PLATE_EDGE, align="left",
+                        font=dict(size=12, color=_INK, family=_FONT)),
+    ))
+
+
 def _member_ends_m(geometry) -> dict[str, tuple]:
     """member name -> ((xi, yi, zi), (xj, yj, zj)) in meters."""
     nodes = {n.name: (n.x * IN_TO_M, n.y * IN_TO_M, n.z * IN_TO_M)
@@ -97,8 +279,14 @@ def _polyline(segments):
 
 
 def visualize_result(result: OptimizationResult, path: str = "structure_wireframe.html",
-                     show: bool = True) -> Path:
+                     show: bool = True,
+                     baseplates: "UniformBaseplateDesign | None" = None) -> Path:
     """Write a standalone interactive HTML wireframe of the final design.
+
+    Pass `baseplates` (a UniformBaseplateDesign) to draw the column baseplates
+    as flat plates at the bases, with their anchor rods and a hover card
+    carrying the plate dimensions, demands and every DCR. Omitting it just
+    leaves them out, so this module keeps working without baseplate_design.
 
     Returns the path of the written file; opens it in the browser if `show`.
     """
@@ -172,6 +360,9 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
         name="pinned base", hoverinfo="skip",
     ))
 
+    if baseplates is not None:
+        _add_baseplates(fig, baseplates)
+
     # failed members overdrawn in the reserved critical color
     failed = [m for m in geometry.members if not checks[m.name]["PASS"]]
     if failed:
@@ -184,6 +375,10 @@ def visualize_result(result: OptimizationResult, path: str = "structure_wirefram
 
     status = "feasible" if result.feasible else "INFEASIBLE — best attempt shown"
     parts = " · ".join(f"{g}: {s}" for g, s in result.sections.items())
+    if baseplates is not None:
+        p = baseplates.plate
+        parts += (f" · baseplate: {p.B * IN_TO_MM:,.0f}×{p.N * IN_TO_MM:,.0f}"
+                  f"×{p.tp * IN_TO_MM:,.1f} mm")
     title = (
         f"<b>Optimized gravity frame</b> — {result.total_weight_kg:,.0f} kg ({status})"
         f"<br><span style='font-size:13px;color:{_INK_2}'>{parts}</span>"

@@ -9,14 +9,21 @@ span below), each interior frame gets a parallel-chord Pratt roof truss
 bearing at the top chord on the same column tops, and the final design is
 re-verified with second-order (P-Delta) axial forces.
 
+Once the member design is final, the column baseplates are designed
+automatically off its base reactions: one pinned-base plate detail sized by
+the governing column and applied at every column base.
+
 Only the building footprint (span, length, eave height) is a geometric input.
 
 All inputs and outputs are SI: meters
 """
 from pathlib import Path
 
-from frame_optimizer import (ClearSpanConfig, optimize_layout,
-                             write_baseplate_json, write_building_json)
+from baseplate_design import (BaseplateConfig, design_uniform_baseplate,
+                              write_baseplate_design_json)
+from frame_optimizer import (ClearSpanConfig, baseplate_inputs,
+                             optimize_layout, write_baseplate_json,
+                             write_building_json)
 
 # all files produced by this script land here (git-ignored)
 OUTPUT_DIR = Path(__file__).parent / "output"
@@ -90,6 +97,39 @@ config = ClearSpanConfig(
     enforce_slenderness_limit=True,   # KL/r <= 200 on columns
 )
 
+# ---------------------------------------------------------------------------
+# Column baseplates. Designed automatically from the base reactions of the
+# finalized member design above - nothing here is a geometric input; the
+# column section and its loads come from the optimization.
+#
+# One plate detail is produced for the whole building: every column is
+# designed, the dimensions are enveloped, and the single plate is re-checked
+# against every column. Bearing and plate flexure are governed by the heaviest
+# column; anchor rod shear by the LIGHTEST one, whose small friction credit
+# leaves its rods the most to carry.
+# ---------------------------------------------------------------------------
+baseplate_config = BaseplateConfig(
+    # ------- concrete support -------
+    fc_mpa=27.6,                 # f'c (4.0 ksi normal-weight concrete)
+
+    pedestal_width_mm=None,      # None = pier assumed to project past the
+    pedestal_length_mm=None,     # plate by pedestal_edge_projection_mm; give
+    pedestal_edge_projection_mm=100.0,   # both to design on a known pier
+
+    # ------- plate and anchor materials -------
+    plate_Fy_mpa=248.0,          # ASTM A36 plate (36 ksi)
+
+    anchor_Fu_mpa=400.0,         # ASTM F1554 Gr. 36 (58 ksi)
+
+    n_rods=4,                    # rods per base (4 per OSHA 1926.755)
+
+    # ------- design base shear (kN per column) -------
+    design_base_shear_kN=0.0,
+    # The gravity model is a lateral mechanism and produces NO base shear, so
+    # the rods land on their 3/4 in detailing minimum while this is 0. Set it
+    # from the separate lateral (wind/seismic) system design to size them.
+)
+
 if __name__ == "__main__":
     result = optimize_layout(config, verbose=True)
     print()
@@ -100,14 +140,25 @@ if __name__ == "__main__":
     result.member_table.to_csv(csv_path, index=False)
     print(f"\nFull per-member check table written to {csv_path}")
 
-    bp_path = write_baseplate_json(result, OUTPUT_DIR / "baseplate_inputs.json")
+    # base reactions of the final design: one solve, written out and then
+    # handed straight to the baseplate design below
+    bp_inputs = baseplate_inputs(result)
+    bp_path = write_baseplate_json(bp_inputs, OUTPUT_DIR / "baseplate_inputs.json")
     print(f"Baseplate design inputs (pinned base) written to {bp_path}")
     ifc_path = write_building_json(result, OUTPUT_DIR / "building_configuration.json")
     print(f"Building configuration for IFC authoring written to {ifc_path}")
 
+    # ------- baseplate design, off the back of the member design -------
+    baseplates = design_uniform_baseplate(bp_inputs, baseplate_config)
+    print()
+    print(baseplates.summary())
+    bpd_path = write_baseplate_design_json(
+        baseplates, OUTPUT_DIR / "baseplate_design.json")
+    print(f"\nBaseplate design written to {bpd_path}")
+
     if visualize_result is not None:
         html_path = visualize_result(result, path=str(OUTPUT_DIR / "clear_span_wireframe.html"),
-                                     show=True)
+                                     show=True, baseplates=baseplates)
         print(f"Interactive wireframe written to {html_path}")
     else:
         print(f"(wireframe visualization skipped: {_viz_skip_reason} - "
