@@ -99,16 +99,10 @@ def _baseplate_hover_card(design: "UniformBaseplateDesign",
                           demand: "ColumnDemand",
                           check: "BaseplateCheck") -> str:
     """Per-baseplate design summary: the plate itself, this column's demands,
-    and every limit state with its DCR.
-
-    The plate is identical at every base, so the card also says which column
-    actually drove each dimension — that is the whole point of the uniform
-    design, and it is not visible from any single plate.
+    and the design-critical limit states with their DCRs.
     """
     plate = design.plate
-    gov = design.governing_column
     verdict = "PASS" if check.passes else "<b>FAIL</b>"
-    orient = "N along X" if _PLATE_N_ALONG_X else "N along Z"
 
     lines = [
         f"<b>baseplate @ {demand.column_id}</b> — pinned · {demand.section_name}",
@@ -128,18 +122,6 @@ def _baseplate_hover_card(design: "UniformBaseplateDesign",
         f" · DCR {check.bearing_dcr:.2f}",
         f"plate flexure: t req {check.t_req * IN_TO_MM:,.1f} / "
         f"{plate.tp * IN_TO_MM:,.1f} mm · DCR {check.flexure_dcr:.2f}",
-        f"rod shear: {demand.Vu * KIP_TO_KN:,.1f} / {check.phiVn * KIP_TO_KN:,.1f} kN"
-        f" · DCR {check.shear_dcr:.2f}",
-    ]
-    if demand.Vu > 0.0:
-        lines.append(f"  (friction credit {check.friction * KIP_TO_KN:,.1f} kN "
-                     f"on {demand.P_friction * KIP_TO_KN:,.0f} kN)")
-    lines += [
-        "",
-        f"<i>one detail at all {design.n_columns} bases · sized by "
-        f"{gov['plate flexure']}, rods by {gov['anchor rod shear']}</i>",
-        f"<i>plan orientation assumed ({orient}); the gravity model "
-        "does not fix it</i>",
     ]
     return "<br>".join(lines)
 
