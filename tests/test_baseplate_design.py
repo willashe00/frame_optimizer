@@ -14,15 +14,15 @@ from dataclasses import replace
 import pytest
 
 from baseplate_design import (BaseplateConfig, ColumnDemand, PlateGeometry,
-                              baseplate_design_configuration, check_plate,
+                              baseplate_configuration, check_plate,
                               demands_from_inputs, design_plate,
                               design_uniform_baseplate, effective_A2,
-                              required_A1, write_baseplate_design_json)
+                              required_A1, write_baseplate_configuration_json)
 from baseplate_design.baseplate_design import (FNV_C, MAX_CONFINEMENT, PHI_B,
                                                PHI_C, PHI_V, ceil_to)
 from baseplate_design.config import KN_TO_KIP
 from frame_optimizer import ClearSpanConfig, baseplate_inputs, optimize_layout
-from frame_optimizer.config import IN_TO_MM, KIP_TO_KN, MM_TO_IN
+from frame_optimizer.config import IN_TO_MM, MM_TO_IN
 
 # f'c = 4.0 ksi and Fy = 36 ksi exactly, so hand calcs stay in imperial
 FC_KSI = 4.0
@@ -372,43 +372,43 @@ def test_no_columns_is_a_clear_error():
 # ---------------------------------------------------------------------------
 # JSON export
 # ---------------------------------------------------------------------------
-def test_export_round_trips_and_reports_the_governing_column(tmp_path):
+def test_export_carries_the_plate_geometry_and_nothing_else(tmp_path):
     design = design_uniform_baseplate(_inputs(SPREAD),
                                       config(design_base_shear_kN=60.0))
-    path = write_baseplate_design_json(design, tmp_path / "baseplate_design.json")
+    path = write_baseplate_configuration_json(
+        design, tmp_path / "baseplate_configuration.json")
     data = json.loads(path.read_text(encoding="utf-8"))
 
-    assert data["schema"] == "baseplate_design/baseplate_design"
-    assert data["verification"]["all_columns_pass"] is True
-    assert data["verification"]["n_columns_checked"] == 3
-    assert len(data["columns"]) == 3
-    assert data["governing"]["by_limit_state"]["bearing"]["member_id"] == "C2"
-    assert (data["governing"]["by_limit_state"]["anchor rod shear"]["member_id"]
-            == "C0")
+    assert data["schema"] == "baseplate_design/baseplate_configuration"
+    # the file models ONE plate: geometry only, none of the design record
+    assert set(data) == {"schema", "schema_version", "units", "plate",
+                         "anchor_rods"}
 
-    plate = data["baseplate"]["plate"]
-    assert plate["width_B_mm"] == pytest.approx(design.plate.B * IN_TO_MM, abs=0.1)
-    assert plate["thickness_tp_mm"] == pytest.approx(design.plate.tp * IN_TO_MM,
-                                                     abs=0.01)
-    assert len(data["baseplate"]["anchor_rods"]["positions_mm"]) == 4
-    assert data["totals"]["n_baseplates"] == 3
+    plate = data["plate"]
+    assert set(plate) == {"width_mm", "length_mm", "thickness_mm"}
+    assert plate["width_mm"] == pytest.approx(design.plate.B * IN_TO_MM, abs=0.1)
+    assert plate["length_mm"] == pytest.approx(design.plate.N * IN_TO_MM, abs=0.1)
+    assert plate["thickness_mm"] == pytest.approx(design.plate.tp * IN_TO_MM,
+                                                  abs=0.01)
 
 
-def test_export_dcrs_match_the_checks():
+def test_export_rods_match_the_designed_plate():
     design = design_uniform_baseplate(_inputs(SPREAD),
                                       config(design_base_shear_kN=60.0))
-    data = baseplate_design_configuration(design)
-    for row in data["columns"]:
-        cid = row["member_id"]
-        check, dm = design.check_for(cid), design.demand_for(cid)
-        assert row["dcr"]["bearing"] == pytest.approx(check.bearing_dcr, abs=1e-4)
-        assert row["dcr"]["plate_flexure"] == pytest.approx(check.flexure_dcr,
-                                                            abs=1e-4)
-        assert row["dcr"]["anchor_rod_shear"] == pytest.approx(check.shear_dcr,
-                                                               abs=1e-4)
-        assert row["demands_kN"]["Pu_governing_lrfd"] == pytest.approx(
-            dm.Pu * KIP_TO_KN, abs=0.01)
-        assert row["PASS"] is True
+    rods = baseplate_configuration(design)["anchor_rods"]
+
+    assert set(rods) == {"count", "diameter_mm", "positions_mm"}
+    assert rods["count"] == design.plate.n_rods
+    assert rods["diameter_mm"] == pytest.approx(design.plate.d_rod * IN_TO_MM,
+                                                abs=0.01)
+
+    expected = [(x * IN_TO_MM, y * IN_TO_MM)
+                for x, y in design.plate.rod_positions()]
+    got = [(r["x_mm"], r["y_mm"]) for r in rods["positions_mm"]]
+    assert len(got) == design.plate.n_rods
+    for (gx, gy), (ex, ey) in zip(got, expected):
+        assert gx == pytest.approx(ex, abs=0.1)
+        assert gy == pytest.approx(ey, abs=0.1)
 
 
 # ---------------------------------------------------------------------------

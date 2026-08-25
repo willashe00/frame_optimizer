@@ -59,7 +59,7 @@ span², so spanning the long way is never lighter).
 | `member_checks_clear_span.csv` | one row per member, all unity checks (kN, kN·m, m) | review |
 | `baseplate_inputs.json` | per-column footprint + base reactions (mm, kN) | baseplate module |
 | `building_configuration.json` | full geometry + sections (mm, m, kg, kPa, MPa) | IFC authoring module |
-| `baseplate_design.json` | the one baseplate detail + per-column checks (mm, kN, MPa) | fabrication / IFC |
+| `baseplate_configuration.json` | the one baseplate detail: plate size + anchor rods (mm) | 3-D modeling / IFC |
 | `baseplates.summary()` (stdout) | plate size, governing column per limit state | humans |
 | `clear_span_wireframe.html` | interactive 3-D wireframe + baseplates (m, kN) | visual check (needs `[viz]`) |
 
@@ -99,21 +99,22 @@ Column web orientation not defined by the gravity model.
   connectivity, group, section)
 - material (MPa), loads (kPa) + combos, connection assumption, headline results
 
-**`baseplate_design.json`** — `write_baseplate_design_json(design)`:
+**`baseplate_configuration.json`** — `write_baseplate_configuration_json(design)`:
 
-- `design_basis`: codes, φ factors, methodology, and the limit states
-  explicitly **excluded** — read this before using the file
-- `inputs`: concrete, pier, plate/rod materials, detailing minimums,
-  fabrication increments (everything from `BaseplateConfig`)
-- `baseplate`: the single detail applied everywhere — B × N × tp in mm *and*
-  inches, bearing area, mass, rod count/diameter/edge distance, and rod
-  `positions_mm` as x/y offsets from the column centerline (so a plate can be
-  placed directly on the base nodes of `building_configuration.json`)
-- `governing`: which column drives each limit state, its Pu/Vu, and why they
-  differ
-- `verification`: `all_columns_pass`, envelope DCRs, `failing_columns`
-- `columns`: every column base — demands, capacities, cantilevers, the three
-  DCRs, governing limit state, `PASS`
+Deliberately minimal — just enough to model the plate itself in 3-D, and
+nothing about how it was designed:
+
+- `plate`: `width_mm` (parallel to the column flange width bf), `length_mm`
+  (parallel to the column depth d), `thickness_mm`
+- `anchor_rods`: `count`, `diameter_mm`, and `positions_mm` as x/y offsets
+  from the plate center (x along the width, y along the length)
+
+No nodes: one detail applies at every column base, concentric with the
+column, so it drops onto the base nodes of `building_configuration.json`. The
+design record — codes, φ factors, per-column demands, DCRs, governing limit
+states — is printed by `baseplates.summary()` and carried in the wireframe
+hover cards, not written to JSON.
+
 
 ## Engineering assumptions
 
@@ -178,7 +179,7 @@ src/baseplate_design/            pinned-base baseplates, off the back of the abo
 ├── config.py                    BaseplateConfig (SI in, kip/inch internally)
 ├── baseplate_design.py          AISC 360 / DG1 design + check of ONE plate
 ├── uniform_design.py            governing column -> one plate for every column
-├── export.py                    baseplate-design JSON writer
+├── export.py                    baseplate-configuration JSON writer
 └── __main__.py                  `python -m baseplate_design [baseplate_inputs.json]`
 modeler/                         plotly wireframe + baseplates (optional, delete-able)
 tests/                           hand-calc, AISC Manual anchors, regression

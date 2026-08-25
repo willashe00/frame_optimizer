@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .baseplate_design import design
 from .config import BaseplateConfig
-from .export import write_baseplate_design_json
+from .export import write_baseplate_configuration_json
 from .uniform_design import design_uniform_baseplate
 
 
@@ -35,9 +35,9 @@ def main(argv: list[str]) -> int:
     print(result.summary())
 
     out_path = Path(argv[1]) if len(argv) > 1 else \
-        inputs_path.with_name("baseplate_design.json")
-    print(f"\nBaseplate design written to "
-          f"{write_baseplate_design_json(result, out_path)}")
+        inputs_path.with_name("baseplate_configuration.json")
+    print(f"\nBaseplate configuration written to "
+          f"{write_baseplate_configuration_json(result, out_path)}")
     return 0 if result.feasible else 1
 
 
