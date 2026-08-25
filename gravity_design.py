@@ -20,7 +20,7 @@ All inputs and outputs are SI: meters
 from pathlib import Path
 
 from baseplate_design import (BaseplateConfig, design_uniform_baseplate,
-                              write_baseplate_design_json)
+                              write_baseplate_configuration_json)
 from frame_optimizer import (ClearSpanConfig, baseplate_inputs,
                              optimize_layout, write_baseplate_json,
                              write_building_json)
@@ -152,9 +152,9 @@ if __name__ == "__main__":
     baseplates = design_uniform_baseplate(bp_inputs, baseplate_config)
     print()
     print(baseplates.summary())
-    bpd_path = write_baseplate_design_json(
-        baseplates, OUTPUT_DIR / "baseplate_design.json")
-    print(f"\nBaseplate design written to {bpd_path}")
+    bpc_path = write_baseplate_configuration_json(
+        baseplates, OUTPUT_DIR / "baseplate_configuration.json")
+    print(f"\nBaseplate configuration written to {bpc_path}")
 
     if visualize_result is not None:
         html_path = visualize_result(result, path=str(OUTPUT_DIR / "clear_span_wireframe.html"),
