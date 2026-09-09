@@ -19,7 +19,7 @@ from ..config import (COLUMN, FT, KPA_TO_KSI, LB_TO_KG, M_TO_IN, MPA_TO_KSI,
 from ..design import CheckParams, check_all, check_member
 from ..geometry import FrameGeometry, build_geometry
 from ..results import OptimizationResult
-from ..sections import WShape, get_shapes
+from ..sections import Section, get_shapes
 
 AnyConfig = Union[FrameConfig, ClearSpanConfig]
 AnalyzeFn = Callable[..., list[MemberDemand]]
@@ -58,7 +58,7 @@ def _prepare(config: AnyConfig) -> tuple[FrameGeometry, CheckParams, AnalyzeFn]:
     return geometry_for(config), CheckParams.from_config(config), analyze_frame
 
 
-def _candidates_by_group(config: AnyConfig) -> dict[str, list[WShape]]:
+def _candidates_by_group(config: AnyConfig) -> dict[str, list[Section]]:
     return {g: get_shapes(names) for g, names in config.candidates_by_group.items()}
 
 
@@ -109,8 +109,8 @@ def _distinct_demands(demands: list[MemberDemand]) -> list[MemberDemand]:
     return list(unique.values())
 
 
-def _screen_group(candidates: list[WShape], demands: list[MemberDemand],
-                  params: CheckParams) -> tuple[WShape, bool, float]:
+def _screen_group(candidates: list[Section], demands: list[MemberDemand],
+                  params: CheckParams) -> tuple[Section, bool, float]:
     """Lightest candidate passing every member of the group under the given
     demands. If none passes, return the candidate with the smallest worst-case
     governing UC so iteration can continue, flagged infeasible. The third
@@ -131,8 +131,8 @@ def _screen_group(candidates: list[WShape], demands: list[MemberDemand],
 # ---------------------------------------------------------------------------
 
 def _presize_clear_span(config: ClearSpanConfig,
-                        candidates: dict[str, list[WShape]],
-                        params: CheckParams) -> dict[str, WShape]:
+                        candidates: dict[str, list[Section]],
+                        params: CheckParams) -> dict[str, Section]:
     """Starting assignment from closed-form tributary statics — no FEA.
 
     The clear-span load path is one-way and statically determinate (deck ->
@@ -157,7 +157,7 @@ def _presize_clear_span(config: ClearSpanConfig,
     def factored(w_d: float, w_l: float) -> float:
         return max(1.4 * w_d, 1.2 * w_d + 1.6 * w_l)
 
-    def simple_span(group: str, name: str, shape: WShape, L: float,
+    def simple_span(group: str, name: str, shape: Section, L: float,
                     w_d: float, w_l: float, length_in: float | None = None) -> MemberDemand:
         """Uniformly loaded simple-span pseudo-demand referenced to `shape`
         (the checker projects deflections onto other candidates via 1/Ix)."""
@@ -279,7 +279,7 @@ def _presize_clear_span(config: ClearSpanConfig,
 # ---------------------------------------------------------------------------
 
 def _bound_demands(config: ClearSpanConfig, geometry: FrameGeometry,
-                   candidates: dict[str, list[WShape]]) -> dict[str, MemberDemand]:
+                   candidates: dict[str, list[Section]]) -> dict[str, MemberDemand]:
     """Rigorous LOWER bounds on each design group's governing member demands.
 
     Every value below is a quantity the real structure must carry *at least*,
@@ -396,7 +396,7 @@ def _bound_demands(config: ClearSpanConfig, geometry: FrameGeometry,
 
 
 def _end_girder_estimate(config: ClearSpanConfig, geometry: FrameGeometry,
-                         candidates: dict[str, list[WShape]],
+                         candidates: dict[str, list[Section]],
                          params: CheckParams) -> float:
     """Advisory end-girder UC — used ONLY to rank layouts, never to reject one.
 
@@ -435,7 +435,7 @@ def _end_girder_estimate(config: ClearSpanConfig, geometry: FrameGeometry,
 
 
 def _infeasibility_proof(config: ClearSpanConfig, geometry: FrameGeometry,
-                         candidates: dict[str, list[WShape]],
+                         candidates: dict[str, list[Section]],
                          params: CheckParams) -> tuple[bool, float]:
     """(provably_infeasible, distance_from_feasible) for one layout, with no FEA.
 
@@ -467,9 +467,9 @@ def _infeasibility_proof(config: ClearSpanConfig, geometry: FrameGeometry,
     return proven, distance
 
 
-def _initial_assignment(config: AnyConfig, candidates: dict[str, list[WShape]],
+def _initial_assignment(config: AnyConfig, candidates: dict[str, list[Section]],
                         params: CheckParams,
-                        warm_start: dict[str, str] | None) -> dict[str, WShape]:
+                        warm_start: dict[str, str] | None) -> dict[str, Section]:
     """Starting point for the fixed-point loop: a warm-start assignment when
     one is given (e.g. the previous layout's winner), else tributary-statics
     pre-sizing for clear-span buildings, else the lightest candidates."""
@@ -483,7 +483,7 @@ def _initial_assignment(config: AnyConfig, candidates: dict[str, list[WShape]],
     return {g: cands[0] for g, cands in candidates.items()}
 
 
-def _weights(geometry: FrameGeometry, assignment: dict[str, WShape]) -> tuple[float, dict[str, float]]:
+def _weights(geometry: FrameGeometry, assignment: dict[str, Section]) -> tuple[float, dict[str, float]]:
     """Total and per-group steel weight in kg (catalog weights are lb/ft)."""
     by_group = {g: 0.0 for g in assignment}
     for m in geometry.members:
@@ -493,7 +493,7 @@ def _weights(geometry: FrameGeometry, assignment: dict[str, WShape]) -> tuple[fl
 
 
 def _build_result(config: AnyConfig, geometry: FrameGeometry,
-                  assignment: dict[str, WShape], demands: list[MemberDemand],
+                  assignment: dict[str, Section], demands: list[MemberDemand],
                   params: CheckParams, iterations: list[dict],
                   converged: bool, feasible: bool) -> OptimizationResult:
     table = check_all(demands, assignment, params)
@@ -528,7 +528,7 @@ def _build_result(config: AnyConfig, geometry: FrameGeometry,
 
 
 def _optimize_iterative(config: AnyConfig, geometry: FrameGeometry,
-                        candidates: dict[str, list[WShape]], params: CheckParams,
+                        candidates: dict[str, list[Section]], params: CheckParams,
                         analyze: AnalyzeFn, max_iterations: int, verbose: bool,
                         warm_start: dict[str, str] | None = None) -> OptimizationResult:
     assignment = _initial_assignment(config, candidates, params, warm_start)
@@ -542,7 +542,7 @@ def _optimize_iterative(config: AnyConfig, geometry: FrameGeometry,
 
     for it in range(1, max_iterations + 1):
         grouped = _group_demands(demands, list(candidates))
-        new_assignment: dict[str, WShape] = {}
+        new_assignment: dict[str, Section] = {}
         feasible = True
         for group, cands in candidates.items():
             shape, ok, _ = _screen_group(cands, grouped[group], params)
@@ -589,7 +589,7 @@ def _optimize_iterative(config: AnyConfig, geometry: FrameGeometry,
 
 
 def _optimize_exhaustive(config: AnyConfig, geometry: FrameGeometry,
-                         candidates: dict[str, list[WShape]], params: CheckParams,
+                         candidates: dict[str, list[Section]], params: CheckParams,
                          analyze: AnalyzeFn, verbose: bool) -> OptimizationResult:
     groups = list(candidates)
     best = None  # (weight, assignment, demands)

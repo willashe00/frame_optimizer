@@ -1,6 +1,7 @@
 # frame_optimizer
 
-Gravity-load optimizer for fully pinned steel frames (AISC W-shapes).
+Gravity-load optimizer for fully pinned steel frames (AISC W-shapes and
+square HSS).
 Pipeline: [Pynite](https://github.com/JWock82/Pynite) 3-D FEA → AISC 360 LRFD
 checks → lightest-section search over candidate section combinations →
 pinned-base column baseplates
@@ -41,7 +42,7 @@ span², so spanning the long way is never lighter).
 ## What gravity_design.py does
 
 1. Defines a `ClearSpanConfig`: 25 m × 35 m plan footprint, 9.14 m eave,
-   candidate W-shapes per design group, roof loads.
+   candidate sections per design group, roof loads.
 2. Calls `optimize_layout(config)` — derives the layout from the footprint
    and returns the lightest feasible `OptimizationResult`.
 3. Calls `design_uniform_baseplate(result, baseplate_config)` — the column
@@ -93,8 +94,12 @@ Column web orientation not defined by the gravity model.
 
 - `building`: span, length, eave height, frame count/spacing, purlin lines,
   gable columns, camber (m / mm)
-- `design_groups`: selected W-shape per group with profile dimensions in mm
-  (enough for a parametric IFC I-section), member count, weight (kg), max UC
+- `design_groups`: selected section per group with profile dimensions in mm
+  (enough for a parametric IFC profile), member count, weight (kg), max UC.
+  Dimension keys differ by family, so branch on `section.profile_type`:
+  a W-shape reports `depth_d_mm` / `flange_width_bf_mm` / `flange_thickness_tf_mm`
+  / `web_thickness_tw_mm`, a square HSS reports `depth_Ht_mm` / `width_B_mm`
+  / `wall_thickness_nominal_mm` / `wall_thickness_design_mm`. (Schema v3.)
 - `nodes` / `members`: complete analysis topology (names, coordinates in mm,
   connectivity, group, section)
 - material (MPa), loads (kPa) + combos, connection assumption, headline results
@@ -130,6 +135,17 @@ hover cards, not written to JSON.
   assumed bracing struts at `bottom_chord_brace_spacing_m` (not modeled);
   webs are checked pin-ended over their own length, K = 1. Connection and
   gusset weight is not included in the reported steel mass.
+- Truss chords are W-shapes; the verticals and diagonals are square HSS.
+  A pin-ended web member is governed by its radius of gyration, and a
+  closed square has no weak axis: at equal area a square HSS carries 1.3x
+  the compression of a W-shape over a short web and ~3x over a long one.
+  **Web-to-chord connections are not modeled.** Hollow-to-open joints need
+  welded gusset or through-plate detailing whose cost and weight this
+  optimizer does not see; size them separately.
+- Columns must be W-shapes. The baseplate module downstream is built on
+  the AISC DG1 I-shape bearing area (0.95d x 0.80bf) and has no hollow
+  equivalent, so `baseplate_inputs()` rejects a hollow column group
+  rather than exporting a plate it cannot design.
 - Purlins are explicit pin-ended members; they deliver true point reactions
   to the girders at shared nodes. Girders are Pynite physical members:
   subdivided at purlin nodes, checked over the full span, self-weight only
@@ -174,7 +190,7 @@ src/frame_optimizer/
 ├── optimization/optimizer.py    layout search + iterative/exhaustive section search
 ├── export.py                    baseplate-inputs + building-configuration JSON writers
 ├── results.py                   OptimizationResult + summary()
-└── sections/                    W-shape catalog: CSV + WShape loader
+└── sections/                    section catalogs: W-shape + square-HSS CSVs, loaders
 src/baseplate_design/            pinned-base baseplates, off the back of the above
 ├── config.py                    BaseplateConfig (SI in, kip/inch internally)
 ├── baseplate_design.py          AISC 360 / DG1 design + check of ONE plate

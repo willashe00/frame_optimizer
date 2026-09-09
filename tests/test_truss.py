@@ -11,7 +11,9 @@ import math
 
 import pytest
 
-from frame_optimizer import ClearSpanConfig, evaluate, optimize, optimize_layout
+from frame_optimizer import (ClearSpanConfig, baseplate_inputs,
+                             building_configuration, evaluate,
+                             optimize, optimize_layout)
 from frame_optimizer.analysis import MemberDemand, analyze_frame
 from frame_optimizer.clear_span import (BOTTOM_CHORD, END_GIRDER, GIRDER,
                                         PURLIN, TOP_CHORD, TRUSS_WEB,
@@ -27,7 +29,9 @@ from frame_optimizer.sections import get_shapes
 
 CAT = {s.name: s for s in get_shapes(
     ["W8X24", "W10X33", "W12X14", "W12X16", "W12X40", "W12X53", "W14X61",
-     "W16X26", "W14X22"])}
+     "W16X26", "W14X22",
+     # truss webs are square HSS; the chords stay W-shapes
+     "HSS4X4X1/4", "HSS5X5X1/4", "HSS6X6X3/8", "HSS8X8X1/4"])}
 
 
 def tcfg(**kw):
@@ -42,7 +46,7 @@ def tcfg(**kw):
         end_girder_candidates=["W12X16", "W16X26"],
         top_chord_candidates=["W12X40", "W12X53"],
         bottom_chord_candidates=["W12X40", "W12X53"],
-        truss_web_candidates=["W8X24", "W10X33", "W12X40"],
+        truss_web_candidates=["HSS4X4X1/4", "HSS5X5X1/4", "HSS6X6X3/8"],
         roof_system="truss",
         span_m=24.0, length_m=24.0, height_m=8.0,
         n_frames=4, purlin_spacing_m=1.5, end_wall_columns=4,
@@ -53,7 +57,7 @@ def tcfg(**kw):
     return ClearSpanConfig(**base)
 
 
-def analyzed(config, top="W12X53", bottom="W12X40", web="W8X24",
+def analyzed(config, top="W12X53", bottom="W12X40", web="HSS5X5X1/4",
              purlin="W12X14", column="W14X61", end_girder="W16X26"):
     geo = build_clear_span_geometry(config)
     assignment = {COLUMN: CAT[column], TOP_CHORD: CAT[top],
@@ -268,6 +272,38 @@ def _params(rules):
     return CheckParams(Fy=50.0, Fu=65.0, E=29000.0, group_rules={"g": rules})
 
 
+def test_hss_web_is_checked_by_the_hss_clauses():
+    """The web group carries square HSS through the same check_member path as
+    every W-shape group, and the HSS clauses come back."""
+    rules = GroupRules(check_deflection=False, check_slenderness=True)
+    L = 111.4                                  # a truss diagonal, ~2.8 m
+    row = check_member(CAT["HSS5X5X1/4"],
+                       _demand(length_in=L, Pu=-60.0, Vu=2.0), _params(rules))
+    assert row["profile"] == "HSS5X5X1/4"
+    assert "E3" in row["axial_clause"] or "E7" in row["axial_clause"]
+    assert "F7" in row["Mx_clause"] and "G4" in row["V_clause"]
+    assert row["PASS"]
+
+
+def test_hollow_web_buys_compression_at_the_same_area():
+    """Why the webs are hollow. W8X24 and HSS8X8X1/4 have the same area (7.1
+    in^2) and nearly the same weight, but the closed square has no weak axis:
+    its governing radius of gyration is ~2x the W-shape's. The gap widens
+    with length, which is exactly where pin-ended truss webs live."""
+    wshape, hss = CAT["W8X24"], CAT["HSS8X8X1/4"]
+    assert hss.A == pytest.approx(wshape.A, rel=0.01)
+    assert min(hss.rx, hss.ry) > 1.9 * min(wshape.rx, wshape.ry)
+
+    ratios = []
+    for L in (111.4, 241.3):                   # short and long web members
+        phi_w, _ = compression_capacity(wshape, 50.0, 29000.0, KLx=L, KLy=L)
+        phi_h, _ = compression_capacity(hss, 50.0, 29000.0, KLx=L, KLy=L)
+        ratios.append(phi_h / phi_w)
+    assert ratios[0] > 1.25                    # already ahead when stocky
+    assert ratios[1] > 2.5                     # and far ahead when slender
+    assert ratios[1] > ratios[0]
+
+
 def test_b1_amplifies_compression_chord_moment():
     shape = CAT["W12X40"]
     KLx = 120.0
@@ -409,10 +445,45 @@ def test_explicit_roof_system_is_honored():
 def test_evaluate_explicit_truss_design():
     result = evaluate(tcfg(), {
         "column": "W14X61", "top_chord": "W12X53", "bottom_chord": "W12X40",
-        "end_girder": "W16X26", "truss_web": "W10X33", "purlin": "W12X14"})
+        "end_girder": "W16X26", "truss_web": "HSS5X5X1/4", "purlin": "W12X14"})
     assert set(result.sections) == {COLUMN, TOP_CHORD, BOTTOM_CHORD,
                                     END_GIRDER, TRUSS_WEB, PURLIN}
     assert result.total_weight_kg > 0
+
+
+def test_building_json_describes_each_family_by_its_own_dimensions():
+    """design_groups carries two profile families now, so a consumer has to
+    branch on profile_type: a box has no flanges to report."""
+    result = evaluate(tcfg(), {
+        "column": "W14X61", "top_chord": "W12X53", "bottom_chord": "W12X40",
+        "end_girder": "W16X26", "truss_web": "HSS5X5X1/4", "purlin": "W12X14"})
+    groups = building_configuration(result)["design_groups"]
+
+    chord = groups[TOP_CHORD]["section"]
+    assert chord["profile_type"] == "W-shape (AISC)"
+    assert "flange_width_bf_mm" in chord and "width_B_mm" not in chord
+
+    web = groups[TRUSS_WEB]["section"]
+    assert web["profile_type"] == "HSS square (AISC)"
+    assert web["depth_Ht_mm"] == pytest.approx(web["width_B_mm"])   # square
+    # design wall is the 0.93 ERW reduction of the ordered nominal wall
+    assert web["wall_thickness_design_mm"] == pytest.approx(
+        0.93 * web["wall_thickness_nominal_mm"], rel=0.02)
+    assert "flange_width_bf_mm" not in web
+
+
+def test_baseplate_handoff_refuses_a_hollow_column():
+    """A hollow web is fine anywhere in the roof, but the DG1 baseplate model
+    downstream is I-shape-only. Refuse at the hand-off with a real message
+    instead of a missing dimension key three modules later."""
+    sections = {"column": "HSS12X12X1/2", "top_chord": "W12X53",
+                "bottom_chord": "W12X40", "end_girder": "W16X26",
+                "truss_web": "HSS5X5X1/4", "purlin": "W12X14"}
+    result = evaluate(tcfg(column_candidates=["HSS12X12X1/2"]), sections)
+    # the design itself is valid: only the baseplate hand-off is restricted
+    assert result.total_weight_kg > 0
+    with pytest.raises(ValueError, match="W-shape columns only"):
+        baseplate_inputs(result)
 
 
 # ------------------------------------------------- layout search + second order
@@ -425,7 +496,7 @@ def test_layout_search_resolves_to_truss_and_verifies_second_order():
         end_girder_candidates=["W12X16", "W16X26"],
         top_chord_candidates=["W12X40", "W12X53"],
         bottom_chord_candidates=["W12X40", "W12X53"],
-        truss_web_candidates=["W8X24", "W10X33", "W12X40"],
+        truss_web_candidates=["HSS4X4X1/4", "HSS5X5X1/4", "HSS6X6X3/8"],
         span_m=14.0, length_m=20.0, height_m=8.0,
         superimposed_dead_kpa=0.72, live_kpa=1.20,
         purlin_Lb_m=0.0,

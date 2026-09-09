@@ -1,4 +1,4 @@
-"""Per-member design verification: MemberDemand + candidate WShape -> unity checks.
+"""Per-member design verification: MemberDemand + candidate Section -> unity checks.
 
 The same check_member() drives both the optimizer's candidate screening and
 the final reported check table, so there is exactly one code path for design
@@ -14,7 +14,7 @@ import pandas as pd
 from ..analysis import MemberDemand
 from ..config import (BEAM, COLUMN, IN_TO_M, KIP_IN_TO_KNM, KIP_TO_KN,
                       M_TO_IN, MPA_TO_KSI, FrameConfig)
-from ..sections import WShape
+from ..sections import Section
 from . import aisc_strengths as st
 
 # AISC 360 Eq. F1-1 evaluated at the quarter points of a parabolic moment
@@ -152,7 +152,7 @@ def _unbraced_length(demand: MemberDemand, rules: GroupRules) -> float:
     return demand.length_in
 
 
-def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> dict:
+def check_member(shape: Section, demand: MemberDemand, params: CheckParams) -> dict:
     """All applicable unity checks for one member with a candidate section.
 
     Deflections were computed by FEA with section demand.Ix_used; elastic
@@ -260,11 +260,11 @@ def check_member(shape: WShape, demand: MemberDemand, params: CheckParams) -> di
     }
 
 
-def member_passes(shape: WShape, demand: MemberDemand, params: CheckParams) -> bool:
+def member_passes(shape: Section, demand: MemberDemand, params: CheckParams) -> bool:
     return bool(check_member(shape, demand, params)["PASS"])
 
 
-def check_all(demands: list[MemberDemand], assignment: dict[str, WShape],
+def check_all(demands: list[MemberDemand], assignment: dict[str, Section],
               params: CheckParams) -> pd.DataFrame:
     """Full check table for a {group: shape} assignment."""
     rows = [check_member(assignment[d.group], d, params) for d in demands]

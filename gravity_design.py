@@ -7,7 +7,8 @@ roof deck. The roof member is a W-shape girder when one can carry the span;
 when none can (roof_system="auto" proves this by statics — e.g. the 52 m
 span below), each interior frame gets a parallel-chord Pratt roof truss
 bearing at the top chord on the same column tops, and the final design is
-re-verified with second-order (P-Delta) axial forces.
+re-verified with second-order (P-Delta) axial forces. The truss chords are
+W-shapes; its verticals and diagonals are square HSS.
 
 Once the member design is final, the column baseplates are designed
 automatically off its base reactions: one pinned-base plate detail sized by
@@ -47,7 +48,7 @@ config = ClearSpanConfig(
 
     # ------- Other inputs (defaults) -------
 
-    # ------- candidate W-shapes (AISC Manual labels) -------
+    # ------- candidate sections (AISC Manual labels) -------
     girder_candidates=[
         "W24X76", "W27X84", "W30X90", "W30X99", "W30X108",
         "W30X116", "W33X118", "W33X130", "W36X135", "W40X149",
@@ -73,7 +74,9 @@ config = ClearSpanConfig(
         "W14X99", "W14X109",
     ],
     truss_web_candidates=[
-        "W8X24", "W8X28", "W10X33", "W10X39", "W12X40", "W12X53",
+        "HSS5X5X1/4", "HSS6X6X3/16", "HSS6X6X1/4", "HSS6X6X5/16",
+        "HSS8X8X1/4", "HSS8X8X5/16", "HSS8X8X3/8",
+        "HSS10X10X3/8", "HSS10X10X1/2",
     ],
 
     # ------- gravity loads -------
@@ -82,7 +85,11 @@ config = ClearSpanConfig(
     live_kpa=1.20,               # governing of ASCE 7 roof live (Lr) and snow
 
     # ------- optional design settings (defaults shown unless noted) -------
-    Fy_mpa=345.0, Fu_mpa=450.0, E_mpa=200000.0,   # ASTM A992
+    Fy_mpa=345.0, Fu_mpa=450.0, E_mpa=200000.0,   # ASTM A992 (W-shapes)
+    # Square HSS in ASTM A500 Gr. C share the 345 MPa yield, so one material
+    # covers both families. Their lower Fu (427 MPa) does not matter here:
+    # no implemented limit state uses Fu (tension is checked on yielding,
+    # D2-1; rupture needs connection geometry this model does not have).
 
     girder_Lb_m=None,            # None = braced at every purlin (the default)
 
