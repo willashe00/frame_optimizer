@@ -7,7 +7,7 @@ Two machine-readable views of the optimized structure:
                              (d, bf, ...), base centerline location, and the
                              vertical base reaction per load combination.
 * building_configuration() - the full optimized building for IFC authoring:
-                             geometry (nodes + members), the selected W-shape
+                             geometry (nodes + members), the selected section
                              per design group with profile dimensions, loads,
                              material, and headline optimization results.
 """
@@ -25,9 +25,11 @@ from .config import COLUMN, IN_TO_MM, KIP_TO_KN, PLF_TO_KG_M, FrameConfig
 from .geometry import FrameGeometry, MemberInfo, NodeInfo
 from .optimization import geometry_for
 from .results import OptimizationResult
-from .sections import WShape, get_shapes
+from .sections import HSSShape, Section, WShape, get_shapes
 
-_SCHEMA_VERSION = 2
+# v3 replaced the flat W-shape dimension keys in design_groups with
+# per-family ones: consumers branch on section.profile_type.
+_SCHEMA_VERSION = 3
 # baseplate_inputs is versioned separately: v3 added per-column base shear.
 _BASEPLATE_SCHEMA_VERSION = 3
 
@@ -48,13 +50,33 @@ def _require_config(result: OptimizationResult) -> object:
     return result.config
 
 
-def _assignment(result: OptimizationResult) -> dict[str, WShape]:
+def _assignment(result: OptimizationResult) -> dict[str, Section]:
     return {g: get_shapes([name])[0] for g, name in result.sections.items()}
 
 
-def _section_dimensions(shape: WShape) -> dict:
+def _section_dimensions(shape: Section) -> dict:
     """The profile dimensions downstream geometry consumers need (SI; the
-    name stays the AISC Manual label, which is an identifier, not a unit)."""
+    name stays the AISC Manual label, which is an identifier, not a unit).
+
+    The dimension keys differ by profile family, so a consumer must branch on
+    'profile_type' rather than assume flanges. Square HSS report the DESIGN
+    wall thickness (what AISC 360 designs on) alongside the nominal one (what
+    is ordered and drawn); the two differ by the 0.93 ERW factor.
+    """
+    common = {
+        "area_mm2": _r(shape.A * _IN2_TO_MM2, 1),
+        "nominal_weight_kg_m": _r(shape.weight_plf * PLF_TO_KG_M, 2),
+    }
+    if isinstance(shape, HSSShape):
+        return {
+            "name": shape.name,
+            "profile_type": "HSS square (AISC)",
+            "depth_Ht_mm": _r(shape.Ht * IN_TO_MM, 2),
+            "width_B_mm": _r(shape.B * IN_TO_MM, 2),
+            "wall_thickness_nominal_mm": _r(shape.tnom * IN_TO_MM, 2),
+            "wall_thickness_design_mm": _r(shape.tdes * IN_TO_MM, 2),
+            **common,
+        }
     return {
         "name": shape.name,
         "profile_type": "W-shape (AISC)",
@@ -62,9 +84,27 @@ def _section_dimensions(shape: WShape) -> dict:
         "flange_width_bf_mm": _r(shape.bf * IN_TO_MM, 2),
         "flange_thickness_tf_mm": _r(shape.tf * IN_TO_MM, 2),
         "web_thickness_tw_mm": _r(shape.tw * IN_TO_MM, 2),
-        "area_mm2": _r(shape.A * _IN2_TO_MM2, 1),
-        "nominal_weight_kg_m": _r(shape.weight_plf * PLF_TO_KG_M, 2),
+        **common,
     }
+
+
+def _require_wshape_columns(assignment: dict[str, Section]) -> None:
+    """Guard the baseplate hand-off, which is W-shape-only.
+
+    baseplate_inputs feeds src/baseplate_design/, whose AISC DG1 bearing model
+    is built on the I-shape 0.95d x 0.80bf effective area and reads the
+    depth/flange keys of the W branch of _section_dimensions(). A hollow
+    column would need a different bearing geometry entirely, so refuse it here
+    rather than let it fail on a missing key three modules downstream.
+    """
+    column = assignment.get(COLUMN)
+    if column is not None and not isinstance(column, WShape):
+        raise ValueError(
+            f"Baseplate design supports W-shape columns only; the column "
+            f"group is {column.name}. The DG1 bearing model in "
+            "src/baseplate_design/ assumes an I-shape footprint (0.95d x "
+            "0.80bf) and has no hollow-section equivalent yet."
+        )
 
 
 def _base_columns(geometry: FrameGeometry) -> list[tuple[MemberInfo, NodeInfo]]:
@@ -75,7 +115,7 @@ def _base_columns(geometry: FrameGeometry) -> list[tuple[MemberInfo, NodeInfo]]:
 
 
 def _base_reactions(result: OptimizationResult, geometry: FrameGeometry,
-                    assignment: dict[str, WShape]
+                    assignment: dict[str, Section]
                     ) -> dict[str, dict[str, dict[str, float]]]:
     """Base reactions (kN) per node per combo, as {node: {'fy': ..., 'shear': ...}}.
 
@@ -108,6 +148,7 @@ def baseplate_inputs(result: OptimizationResult) -> dict:
     config = _require_config(result)
     geometry = geometry_for(config)
     assignment = _assignment(result)
+    _require_wshape_columns(assignment)
     reactions = _base_reactions(result, geometry, assignment)
 
     strength_combos = list(STRENGTH_COMBOS)

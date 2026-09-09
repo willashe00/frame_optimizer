@@ -34,7 +34,7 @@ from Pynite import FEModel3D
 
 from ..config import KPA_TO_KSI, MPA_TO_KSI, PLF_TO_KIP_PER_IN, FrameConfig
 from ..geometry import FrameGeometry
-from ..sections import WShape
+from ..sections import Section
 
 STRENGTH_COMBOS = {"1.4D": {"D": 1.4}, "1.2D+1.6L": {"D": 1.2, "L": 1.6}}
 SERVICE_TOTAL_COMBO = ("D+L", {"D": 1.0, "L": 1.0})
@@ -77,7 +77,7 @@ def _line_load_kip_in(kpa: float, trib_width_in: float) -> float:
     return kpa * KPA_TO_KSI * trib_width_in
 
 
-def build_model(geometry: FrameGeometry, assignment: dict[str, WShape],
+def build_model(geometry: FrameGeometry, assignment: dict[str, Section],
                 config: FrameConfig) -> FEModel3D:
     """Assemble the Pynite model for one {group: shape} assignment."""
     model = FEModel3D()
@@ -152,7 +152,7 @@ def _chord_relative_sag(member, length: float, combo: str, n: int = 20) -> float
 
 
 def extract_demands(model: FEModel3D, geometry: FrameGeometry,
-                    assignment: dict[str, WShape]) -> list[MemberDemand]:
+                    assignment: dict[str, Section]) -> list[MemberDemand]:
     """Envelope each member's design actions over the strength combos."""
     node_y = {n.name: n.y for n in geometry.nodes}
     demands = []
@@ -238,7 +238,7 @@ def solve_model_second_order(model: FEModel3D, check_stability: bool = True) -> 
         ) from exc
 
 
-def analyze_frame(geometry: FrameGeometry, assignment: dict[str, WShape],
+def analyze_frame(geometry: FrameGeometry, assignment: dict[str, Section],
                   config: FrameConfig,
                   check_stability: bool = True,
                   second_order: bool = False) -> list[MemberDemand]:

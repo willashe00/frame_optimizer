@@ -18,6 +18,10 @@ PURLIN = "purlin"
 # Pratt-truss roof system (roof_system="truss"): replaces the interior W
 # girders when the clear span outgrows every rolled shape. Verticals and
 # diagonals share one 'truss_web' group (one shape — fabrication-uniform).
+# The chords stay W-shapes (they carry the purlin reactions in bending as
+# well as chord axial); the webs are square HSS, whose equal and much
+# larger radius of gyration is what a pin-ended compression member of
+# panel length actually needs. Either family is accepted in any group.
 TOP_CHORD = "top_chord"
 BOTTOM_CHORD = "bottom_chord"
 TRUSS_WEB = "truss_web"
@@ -185,6 +189,7 @@ class ClearSpanConfig:
     roof_system: str = "auto"                # "auto" | "girder" | "truss"
     top_chord_candidates: list[str] | None = None
     bottom_chord_candidates: list[str] | None = None
+    # square HSS labels, e.g. 'HSS8X8X1/4'
     truss_web_candidates: list[str] | None = None
     truss_depth_m: float | None = None       # None -> span/12
     truss_camber_mm: float = 0.0             # credited like girder camber,
@@ -453,7 +458,10 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
             apply_B1=True,
         )
         # Webs: pin-ended axial members checked over their own length
-        # (K = 1, no bracing credit — conservative).
+        # (K = 1, no bracing credit — conservative). Lb is left at the
+        # default because it is inert for the square HSS these carry:
+        # AISC F7.4 has no LTB limit state for a square section, so the
+        # unbraced length never enters their flexural capacity.
         rules[TRUSS_WEB] = GroupRules(
             check_deflection=False,
             check_slenderness=True,
