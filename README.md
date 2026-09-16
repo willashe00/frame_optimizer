@@ -109,10 +109,18 @@ Column web orientation not defined by the gravity model.
 Deliberately minimal — just enough to model the plate itself in 3-D, and
 nothing about how it was designed:
 
-- `plate`: `width_mm` (parallel to the column flange width bf), `length_mm`
-  (parallel to the column depth d), `thickness_mm`
-- `anchor_rods`: `count`, `diameter_mm`, and `positions_mm` as x/y offsets
-  from the plate center (x along the width, y along the length)
+- `N`: plate dimension along the column's local-x axis (parallel to the
+  column depth d)
+- `B`: plate dimension along the column's local-y axis (parallel to the
+  column flange width bf)
+- `t_p`: plate thickness
+- `e_min`: distance from the outer edge of the plate to the centre of each
+  anchor bolt (same on all four edges)
+- `bolt_dia`: anchor bolt diameter
+- `n_bolts`: number of anchor bolts (symmetric pattern, half outside each
+  column flange, `e_min` in from the plate edges)
+
+All lengths in mm. (Schema v2.)
 
 No nodes: one detail applies at every column base, concentric with the
 column, so it drops onto the base nodes of `building_configuration.json`. The

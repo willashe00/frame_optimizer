@@ -372,7 +372,7 @@ def test_no_columns_is_a_clear_error():
 # ---------------------------------------------------------------------------
 # JSON export
 # ---------------------------------------------------------------------------
-def test_export_carries_the_plate_geometry_and_nothing_else(tmp_path):
+def test_export_carries_the_plate_parameters_and_nothing_else(tmp_path):
     design = design_uniform_baseplate(_inputs(SPREAD),
                                       config(design_base_shear_kN=60.0))
     path = write_baseplate_configuration_json(
@@ -380,35 +380,35 @@ def test_export_carries_the_plate_geometry_and_nothing_else(tmp_path):
     data = json.loads(path.read_text(encoding="utf-8"))
 
     assert data["schema"] == "baseplate_design/baseplate_configuration"
-    # the file models ONE plate: geometry only, none of the design record
-    assert set(data) == {"schema", "schema_version", "units", "plate",
-                         "anchor_rods"}
+    assert data["schema_version"] == 2
+    # the file models ONE plate: its design parameters only, none of the
+    # design record
+    assert set(data) == {"schema", "schema_version", "units",
+                         "N", "B", "t_p", "e_min", "bolt_dia", "n_bolts"}
+    assert data["units"] == {"length": "mm"}
 
-    plate = data["plate"]
-    assert set(plate) == {"width_mm", "length_mm", "thickness_mm"}
-    assert plate["width_mm"] == pytest.approx(design.plate.B * IN_TO_MM, abs=0.1)
-    assert plate["length_mm"] == pytest.approx(design.plate.N * IN_TO_MM, abs=0.1)
-    assert plate["thickness_mm"] == pytest.approx(design.plate.tp * IN_TO_MM,
-                                                  abs=0.01)
+    plate = design.plate
+    assert data["N"] == pytest.approx(plate.N * IN_TO_MM, abs=0.1)
+    assert data["B"] == pytest.approx(plate.B * IN_TO_MM, abs=0.1)
+    assert data["t_p"] == pytest.approx(plate.tp * IN_TO_MM, abs=0.01)
+    assert data["e_min"] == pytest.approx(plate.edge_distance * IN_TO_MM,
+                                          abs=0.1)
+    assert data["bolt_dia"] == pytest.approx(plate.d_rod * IN_TO_MM, abs=0.01)
+    assert data["n_bolts"] == plate.n_rods
+    assert isinstance(data["n_bolts"], int)
 
 
-def test_export_rods_match_the_designed_plate():
+def test_export_edge_distance_matches_the_designed_rod_layout():
     design = design_uniform_baseplate(_inputs(SPREAD),
                                       config(design_base_shear_kN=60.0))
-    rods = baseplate_configuration(design)["anchor_rods"]
-
-    assert set(rods) == {"count", "diameter_mm", "positions_mm"}
-    assert rods["count"] == design.plate.n_rods
-    assert rods["diameter_mm"] == pytest.approx(design.plate.d_rod * IN_TO_MM,
-                                                abs=0.01)
-
-    expected = [(x * IN_TO_MM, y * IN_TO_MM)
-                for x, y in design.plate.rod_positions()]
-    got = [(r["x_mm"], r["y_mm"]) for r in rods["positions_mm"]]
-    assert len(got) == design.plate.n_rods
-    for (gx, gy), (ex, ey) in zip(got, expected):
-        assert gx == pytest.approx(ex, abs=0.1)
-        assert gy == pytest.approx(ey, abs=0.1)
+    data = baseplate_configuration(design)
+    # e_min is the same edge distance that places the rods on the plate
+    xs = {abs(x) for x, _ in design.plate.rod_positions()}
+    ys = {abs(y) for _, y in design.plate.rod_positions()}
+    assert data["e_min"] == pytest.approx(
+        (design.plate.B / 2.0 - max(xs)) * IN_TO_MM, abs=0.1)
+    assert data["e_min"] == pytest.approx(
+        (design.plate.N / 2.0 - max(ys)) * IN_TO_MM, abs=0.1)
 
 
 # ---------------------------------------------------------------------------
