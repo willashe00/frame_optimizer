@@ -476,7 +476,7 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
         )
     if config.has_end_girder_group:
         # same bracing/serviceability rules as the interior girders, but no
-        # camber: gable-column support makes their effective spans short
+        # camber: gable columns cut them into short simple-span segments
         rules[END_GIRDER] = GroupRules(
             Lb_in=girder_Lb,
             check_deflection=config.check_deflection,

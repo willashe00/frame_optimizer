@@ -113,8 +113,10 @@ def test_truss_topology_and_derived_geometry():
     assert len(geo.members_in_group(BOTTOM_CHORD)) == n_int
     webs = geo.members_in_group(TRUSS_WEB)
     assert len(webs) == n_int * ((n - 1) + n)
-    # end frames keep their end girders and gable columns
-    assert len(geo.members_in_group(END_GIRDER)) == 2
+    # end frames keep their end girders (one member per segment between
+    # gable columns) and gable columns
+    assert len(geo.members_in_group(END_GIRDER)) == \
+        2 * (config.end_wall_columns + 1)
     assert len(geo.members_in_group(COLUMN)) == 2 * config.n_frames + 2 * 4
 
     node = {nd.name: nd for nd in geo.nodes}
