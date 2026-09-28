@@ -476,7 +476,7 @@ def clear_span_check_params(config: ClearSpanConfig) -> CheckParams:
         )
     if config.has_end_girder_group:
         # same bracing/serviceability rules as the interior girders, but no
-        # camber: gable-column support makes their effective spans short
+        # camber: gable columns cut them into short simple-span segments
         rules[END_GIRDER] = GroupRules(
             Lb_in=girder_Lb,
             check_deflection=config.check_deflection,
@@ -506,6 +506,22 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
     def is_truss_frame(j: int) -> bool:
         return truss and j not in end_frames
 
+    # end-wall (gable) columns, evenly spaced along the span; one that lands
+    # on a purlin line snaps to it and caps that purlin node
+    gables: dict[int, tuple[float, int | None]] = {}   # k -> (x, purlin line)
+    for k in range(1, config.end_wall_columns + 1):
+        x, line = span * k / (config.end_wall_columns + 1), None
+        for i in range(1, n_sp):
+            if abs(x - i * sp) < _COINCIDENT_TOL_IN:
+                x, line = i * sp, i
+                break
+        gables[k] = (x, line)
+    gable_lines = {line for _, line in gables.values() if line is not None}
+
+    def gable_top(k: int, j: int) -> str:
+        line = gables[k][1]
+        return f"NG{k}.{j}" if line is None else f"NP{line}.{j}"
+
     for j in range(nf):
         z = j * s_f
         for side, x in ((0, 0.0), (1, span)):
@@ -514,10 +530,14 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
                                   free_dx=(side == 1 and is_truss_frame(j))))
         # interior purlin-line nodes sit on the girder axis: Pynite splits the
         # physical girder there, and the continuous girder provides their
-        # rotational stiffness (free_rotations - see analysis/frame_model.py)
+        # rotational stiffness (free_rotations - see analysis/frame_model.py).
+        # Exception: a purlin node capping a gable column is a hinge in the
+        # end girder (segments end there, see below), so every member end at
+        # it is released and it keeps the rotational restraint.
         for i in range(1, n_sp):
+            hinge = j in end_frames and i in gable_lines
             nodes.append(NodeInfo(f"NP{i}.{j}", i * sp, height, z,
-                                  is_base=False, free_rotations=True,
+                                  is_base=False, free_rotations=not hinge,
                                   free_dx=is_truss_frame(j)))
 
     def girder_group(j: int) -> str:
@@ -535,12 +555,19 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
         if is_truss_frame(j):
             continue   # interior truss frames are assembled below
         # girders carry only self-weight directly; ALL roof load arrives as
-        # purlin point reactions at the shared nodes
-        members.append(MemberInfo(
-            name=f"G{j}", group=girder_group(j),
-            i_node=f"NE0.{j}", j_node=f"NE1.{j}",
-            length_in=span, story=1, trib_width_in=0.0,
-        ))
+        # purlin point reactions at the shared nodes. An end girder is
+        # detailed as separate segments spanning column to column on shear
+        # tabs, so each segment is its own pin-ended member: the girder line
+        # is hinged at every gable column and each segment is a simple span.
+        supports = [(0.0, f"NE0.{j}"), (span, f"NE1.{j}")]
+        if j in end_frames:
+            supports[1:1] = [(x, gable_top(k, j)) for k, (x, _) in gables.items()]
+        for s, ((xi, ni), (xj, nj)) in enumerate(zip(supports, supports[1:])):
+            members.append(MemberInfo(
+                name=f"G{j}" if len(supports) == 2 else f"G{j}.s{s}",
+                group=girder_group(j), i_node=ni, j_node=nj,
+                length_in=xj - xi, story=1, trib_width_in=0.0,
+            ))
 
     # Pratt truss on every interior frame (top-chord bearing): the top chord
     # replaces the girder as ONE continuous full-span member at eave height —
@@ -614,27 +641,20 @@ def build_clear_span_geometry(config: ClearSpanConfig) -> FrameGeometry:
                 ))
 
     # end-wall (gable) columns: exterior members under the two end girders.
-    # A gable column that lands on a purlin line reuses that node.
-    if config.end_wall_columns:
-        purlin_xs = {i: i * sp for i in range(1, n_sp)}
-        for j in end_frames:
-            for k in range(1, config.end_wall_columns + 1):
-                x = span * k / (config.end_wall_columns + 1)
-                top = None
-                for i, xi in purlin_xs.items():
-                    if abs(x - xi) < _COINCIDENT_TOL_IN:
-                        top, x = f"NP{i}.{j}", xi
-                        break
-                if top is None:
-                    top = f"NG{k}.{j}"
-                    nodes.append(NodeInfo(top, x, height, j * s_f,
-                                          is_base=False, free_rotations=True))
-                nodes.append(NodeInfo(f"NGB{k}.{j}", x, 0.0, j * s_f, is_base=True))
-                members.append(MemberInfo(
-                    name=f"CG{k}.{j}", group=COLUMN,
-                    i_node=f"NGB{k}.{j}", j_node=top,
-                    length_in=height, story=1, trib_width_in=0.0,
-                ))
+    # A gable column that lands on a purlin line reuses that node. Its top is
+    # a girder hinge: every member end there is released, so the node keeps
+    # the rotational restraint like any other pinned joint.
+    for j in end_frames:
+        for k, (x, line) in gables.items():
+            top = gable_top(k, j)
+            if line is None:
+                nodes.append(NodeInfo(top, x, height, j * s_f, is_base=False))
+            nodes.append(NodeInfo(f"NGB{k}.{j}", x, 0.0, j * s_f, is_base=True))
+            members.append(MemberInfo(
+                name=f"CG{k}.{j}", group=COLUMN,
+                i_node=f"NGB{k}.{j}", j_node=top,
+                length_in=height, story=1, trib_width_in=0.0,
+            ))
 
     def line_node(i: int, j: int) -> str:
         if i == 0:

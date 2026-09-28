@@ -158,14 +158,13 @@ def _presize_clear_span(config: ClearSpanConfig,
         return max(1.4 * w_d, 1.2 * w_d + 1.6 * w_l)
 
     def simple_span(group: str, name: str, shape: Section, L: float,
-                    w_d: float, w_l: float, length_in: float | None = None) -> MemberDemand:
+                    w_d: float, w_l: float) -> MemberDemand:
         """Uniformly loaded simple-span pseudo-demand referenced to `shape`
         (the checker projects deflections onto other candidates via 1/Ix)."""
         w_u = factored(w_d, w_l)
         EI = E * shape.Ix
         return MemberDemand(
-            name=name, group=group, story=1,
-            length_in=L if length_in is None else length_in,
+            name=name, group=group, story=1, length_in=L,
             trib_width_in=0.0, shape_used=shape.name, Ix_used=shape.Ix,
             Pu=0.0, Mux=w_u * L**2 / 8.0, Muy=0.0, Vu=w_u * L / 2.0,
             defl_total_in=5.0 * (w_d + w_l) * L**4 / (384.0 * EI),
@@ -249,14 +248,14 @@ def _presize_clear_span(config: ClearSpanConfig,
         w_roof_self = w_girder
 
     if config.has_end_girder_group:
-        # end wall: half tributary width, segments between gable columns
-        # treated as simple spans (conservative vs. continuity)
+        # end wall: half tributary width; the girder is hinged at its gable
+        # columns, so each segment is a simple span checked over its own length
         e0 = candidates[END_GIRDER][0]
         seg = span / (config.end_wall_columns + 1)
         demands[END_GIRDER] = [simple_span(
             END_GIRDER, "~EG", e0, seg,
             w_d=(q_d + smear) * s_f / 2.0 + e0.weight_plf * PLF_TO_KIP_PER_IN,
-            w_l=q_l * s_f / 2.0, length_in=span)]
+            w_l=q_l * s_f / 2.0)]
 
     # interior perimeter column: half the roof tributary of one full bay
     # (everything on its side of the span reaches it, via girder/truss or
@@ -297,9 +296,9 @@ def _bound_demands(config: ClearSpanConfig, geometry: FrameGeometry,
 
     Dropping self-weight strictly lowers D, and max(1.4D, 1.2D+1.6L) is
     increasing in D, so the factored bounds stay below the true demands.
-    Midspan values bound the member maxima from below. `end_girder` is not
-    bounded (gable-column continuity makes it awkward); omitting a group only
-    weakens the proof, never invalidates it.
+    Midspan values bound the member maxima from below. `end_girder` is
+    bounded only when it has no gable columns (see below); omitting a group
+    only weakens the proof, never invalidates it.
 
     Deflections are referenced to each group's first candidate, matching the
     Ix_used/Ix projection check_member() applies, so the bound is valid for
@@ -362,11 +361,12 @@ def _bound_demands(config: ClearSpanConfig, geometry: FrameGeometry,
             Pu=-factored(p_d, p_l), Mux=0.0, Muy=0.0, Vu=0.0,
             defl_total_in=0.0, defl_live_in=0.0)
 
-    # An end girder is only boundable when nothing holds it up mid-span: with
-    # gable columns it runs continuous over them, and a trustworthy lower
-    # bound would need their stiffnesses. With none it is the interior-girder
-    # case at half the tributary width (one adjacent bay of purlins instead of
-    # two), so the identical simple-span superposition applies.
+    # An end girder is bounded here only when nothing holds it up mid-span:
+    # it is then the interior-girder case at half the tributary width (one
+    # adjacent bay of purlins instead of two), so the identical simple-span
+    # superposition applies. (With gable columns its hinged segments are
+    # simple spans too and could be bounded segment by segment; that is not
+    # implemented.)
     #
     # Worth doing because the no-gable variants are exactly the ones that tend
     # to fail - an unsupported end girder spans the full building width - and
@@ -400,11 +400,10 @@ def _end_girder_estimate(config: ClearSpanConfig, geometry: FrameGeometry,
                          params: CheckParams) -> float:
     """Advisory end-girder UC — used ONLY to rank layouts, never to reject one.
 
-    The end girders run over their gable columns as continuous members, and a
-    trustworthy lower bound on a continuous member's demands needs support
-    stiffnesses this stage does not have. So this deliberately goes the other
-    way and OVER-estimates, treating each gable-column segment as an
-    independent simple span carrying half a bay.
+    The end girder is hinged at its gable columns, so each segment is a
+    simple span carrying half a bay; this smears the purlin point loads into
+    a uniform load over one segment. That is an approximation, not a bound,
+    so it can rank layouts but never prove one infeasible.
 
     Ranking needs it because the rigorous bounds are blind to gable columns
     entirely: without this term, layouts with no gable columns (whose end
@@ -426,7 +425,8 @@ def _end_girder_estimate(config: ClearSpanConfig, geometry: FrameGeometry,
     EI = config.E_mpa * MPA_TO_KSI * ref.Ix
     estimate = MemberDemand(
         name="~end_girder", group=END_GIRDER, story=1,
-        length_in=span,          # deflection limits key off the member length
+        length_in=seg,           # each segment is its own member, so its
+                                 # deflection limits key off the segment
         trib_width_in=0.0, shape_used=ref.name, Ix_used=ref.Ix,
         Pu=0.0, Mux=w_u * seg**2 / 8.0, Muy=0.0, Vu=w_u * seg / 2.0,
         defl_total_in=5.0 * (w_d + w_l) * seg**4 / (384.0 * EI),

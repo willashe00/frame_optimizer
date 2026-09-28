@@ -26,7 +26,8 @@ from frame_optimizer.clear_span import (MAX_FRAME_SPACING_M,
                                         derive_end_wall_columns,
                                         derive_n_frames,
                                         derive_purlin_spacing_m)
-from frame_optimizer.config import COLUMN, FT_TO_M, M_TO_IN
+from frame_optimizer.config import COLUMN, FT_TO_M, M_TO_IN, MPA_TO_KSI
+from frame_optimizer.design import check_member
 from frame_optimizer.optimization.optimizer import (_PROOF_MARGIN,
                                                     _bound_demands,
                                                     _distinct_demands)
@@ -112,11 +113,21 @@ def test_all_columns_on_perimeter_no_interior_supports():
     assert len(geo.members_in_group(PURLIN)) == n_lines * (config.n_frames - 1)
 
 
-def test_interior_girder_nodes_have_free_rotations():
-    geo = build_clear_span_geometry(gable_cfg())
-    for n in geo.nodes:
-        on_girder_interior = n.name.startswith(("NP", "NG")) and not n.is_base
-        assert n.free_rotations == on_girder_interior
+def test_only_girder_interior_nodes_have_free_rotations():
+    # purlin points ride a continuous girder (or end-girder segment) and
+    # rotate with it; gable-column tops are HINGES in the end girder, where
+    # every member end is released, so they keep the rotational restraint -
+    # whether the gable gets its own node (NG) or caps a purlin node (NP)
+    on_purlin_lines = cfg(end_wall_columns=4,
+                          end_girder_candidates=["W12X16", "W16X26"])
+    for config in (gable_cfg(), on_purlin_lines):
+        geo = build_clear_span_geometry(config)
+        gable_tops = {m.j_node for m in geo.members if m.name.startswith("CG")}
+        assert gable_tops
+        for n in geo.nodes:
+            on_girder_interior = (n.name.startswith("NP")
+                                  and n.name not in gable_tops)
+            assert n.free_rotations == on_girder_interior
 
 
 def test_gable_columns_on_end_walls_only():
@@ -134,8 +145,18 @@ def test_gable_columns_on_end_walls_only():
         assert n.z == pytest.approx(0.0) or n.z == pytest.approx(length_in)
         # ...but only on the two exterior end walls
     assert geo.groups == (COLUMN, END_GIRDER, GIRDER, PURLIN)
-    assert len(geo.members_in_group(END_GIRDER)) == 2
     assert len(geo.members_in_group(GIRDER)) == config.n_frames - 2
+    # each end girder is one member per segment, column to column: the
+    # segments tile the span and meet only at gable-column tops (hinges)
+    tops = {m.j_node for m in gables}
+    for z in (0.0, length_in):
+        segs = sorted((m for m in geo.members_in_group(END_GIRDER)
+                       if node[m.i_node].z == pytest.approx(z)),
+                      key=lambda m: node[m.i_node].x)
+        assert len(segs) == config.end_wall_columns + 1
+        assert sum(m.length_in for m in segs) == pytest.approx(span_in)
+        for a, b in zip(segs, segs[1:]):
+            assert a.j_node == b.i_node and a.j_node in tops
 
 
 def test_gable_column_on_purlin_line_reuses_node():
@@ -353,11 +374,68 @@ def test_end_girders_see_a_fraction_of_interior_demand():
     config = gable_cfg()
     _, _, demands = analyzed(config)
     interior = next(d for d in demands if d.name == "G1")
-    end = next(d for d in demands if d.name == "G0")
-    assert end.group == END_GIRDER
+    end = [d for d in demands if d.group == END_GIRDER]
+    assert end
     # half the tributary width AND gable-column support at the third points
-    assert end.Mux < 0.2 * interior.Mux
-    assert end.defl_total_in < 0.2 * interior.defl_total_in
+    assert max(d.Mux for d in end) < 0.2 * interior.Mux
+    assert max(d.defl_total_in for d in end) < 0.2 * interior.defl_total_in
+
+
+def test_end_girder_segments_are_hinged_simple_spans():
+    """Gable columns hinge the end girder (segments on shear tabs), so each
+    segment must reproduce simple-span statics with no moment carried over
+    the gable column. One gable column at midspan caps purlin line 5, so
+    each 25 ft segment carries four purlin reactions at L/5 spacing."""
+    config = cfg(end_wall_columns=1,
+                 end_girder_candidates=["W12X16", "W16X26", "W21X44"])
+    _, _, demands = analyzed(config)
+    by_name = {d.name: d for d in demands}
+    L = config.span_m * M_TO_IN / 2.0
+
+    # purlin reaction on an end girder: half a bay of roof + half a purlin
+    s_f = config.frame_spacing_m / FT_TO_M
+    sp = config.purlin_spacing_actual_m / FT_TO_M
+    P_d = (15.0 * sp + CAT["W8X10"].weight_plf) * s_f / 2.0 / 1000.0   # kip
+    P_l = 25.0 * sp * s_f / 2.0 / 1000.0
+    w = CAT["W16X26"].weight_plf / 12000.0                              # kip/in
+
+    # four equal loads at L/5, 2L/5, 3L/5, 4L/5: R = 2P, and the moment is
+    # flat at 3PL/5 between the inner pair; self-weight adds wL^2/8
+    M_d = 0.6 * P_d * L + w * L**2 / 8.0
+    M_l = 0.6 * P_l * L
+    # midspan sag: sum of P*a*(3L^2 - 4a^2)/48EI over the four loads
+    EI = config.E_mpa * MPA_TO_KSI * CAT["W16X26"].Ix
+    sag = 0.063 * (P_d + P_l) * L**3 / EI + 5.0 * w * L**4 / (384.0 * EI)
+    for name in ("G0.s0", "G0.s1"):
+        seg = by_name[name]
+        assert seg.length_in == pytest.approx(L)
+        assert seg.Mux == pytest.approx(
+            max(1.4 * M_d, 1.2 * M_d + 1.6 * M_l), rel=1e-3)
+        assert seg.defl_total_in == pytest.approx(sag, rel=1e-3)
+
+    # the gable column takes its simple-span share: one segment end reaction
+    # from each side (2P + wL/2) plus the purlin line it caps, plus its own
+    # self-weight. A girder continuous over it would draw ~25% more.
+    col_d = CAT["W10X33"].weight_plf * config.height_m / FT_TO_M / 1000.0
+    D = 5.0 * P_d + w * L + col_d
+    assert -by_name["CG1.0"].Pu == pytest.approx(
+        max(1.4 * D, 1.2 * D + 1.6 * 5.0 * P_l), rel=1e-3)
+
+
+def test_end_girder_deflection_limit_uses_segment_length():
+    # each segment is its own member, so its L/360 and L/240 limits key off
+    # the segment between gable columns, not the full end-wall span
+    config = gable_cfg()
+    _, assignment, demands = analyzed(config)
+    params = clear_span_check_params(config)
+    rules = params.rules_for(END_GIRDER)
+    seg = config.span_m * M_TO_IN / (config.end_wall_columns + 1)
+    for d in (d for d in demands if d.group == END_GIRDER):
+        row = check_member(assignment[END_GIRDER], d, params)
+        assert row["UC_defl_live"] == pytest.approx(
+            d.defl_live_in / (seg / rules.defl_live_ratio))
+        assert row["UC_defl_total"] == pytest.approx(
+            d.defl_total_in / (seg / rules.defl_total_ratio))
 
 
 # ------------------------------------------------------------- end-to-end
