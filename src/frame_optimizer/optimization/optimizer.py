@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 import os
 from dataclasses import replace
@@ -24,6 +25,8 @@ from ..sections import Section, get_shapes
 AnyConfig = Union[FrameConfig, ClearSpanConfig]
 AnalyzeFn = Callable[..., list[MemberDemand]]
 
+
+logger = logging.getLogger(__name__)
 
 # A layout is only ruled out without FEA when its lower-bound UC clears 1.0 by this margin
 _PROOF_MARGIN = 1.02
@@ -702,14 +705,32 @@ def _run_layouts(config: ClearSpanConfig, layouts: list[tuple[int, float, int]],
     """
     if not layouts:
         return []
-    # Never spawn from inside a worker. On spawn platforms each worker
-    # re-imports the caller's __main__ module, so a user script that calls
-    # optimize_layout() at module level (no `if __name__ == "__main__"`
-    # guard) would otherwise have every worker start another pool, and so on
-    # - a fork bomb rather than a slow run. Falling back to serial here keeps
-    # such a script merely wasteful instead of fatal.
+    # Never spawn from inside a worker. Two separate cases, both ending in
+    # the serial path, which produces identical results just slower.
+    #
+    # 1. A child of our own pool. On spawn platforms each worker re-imports
+    #    the caller's __main__ module, so a user script that calls
+    #    optimize_layout() at module level (no `if __name__ == "__main__"`
+    #    guard) would otherwise have every worker start another pool, and so
+    #    on - a fork bomb rather than a slow run.
+    # 2. A daemonic process, such as a Celery prefork worker. Python forbids
+    #    a daemonic process from having children at all, so the pool below
+    #    could only raise. parent_process() does NOT catch this: Celery forks
+    #    via billiard, which keeps its own process bookkeeping, so
+    #    multiprocessing still believes it is in the main process. Detect it
+    #    directly and say so - an unexplained serial run is a large, silent
+    #    slowdown that is very hard to diagnose from the outside.
     import multiprocessing
     if multiprocessing.parent_process() is not None:
+        return _optimize_layout_chunk((config, layouts, method, max_iterations))
+    if multiprocessing.current_process().daemon:
+        logger.warning(
+            "Layout search running serially over %d layouts: this process (%s) "
+            "is daemonic and cannot start worker processes. A Celery prefork "
+            "worker behaves this way; running the worker with --pool=threads "
+            "restores parallelism.",
+            len(layouts), multiprocessing.current_process().name,
+        )
         return _optimize_layout_chunk((config, layouts, method, max_iterations))
     if n_jobs is None:
         n_jobs = os.cpu_count() or 1
@@ -734,7 +755,14 @@ def _run_layouts(config: ClearSpanConfig, layouts: list[tuple[int, float, int]],
         return [r for chunk in chunk_results for r in chunk]
     except Exception:
         # multiprocessing unavailable (sandboxed interpreter, pickling issue,
-        # ...): the serial path produces identical results, just slower
+        # ...): the serial path produces identical results, just slower. Log
+        # the reason rather than swallowing it - this fallback is worth several
+        # minutes on a large layout search, so it must never be silent.
+        logger.warning(
+            "Layout search falling back to serial over %d layouts: could not "
+            "run %d chunks in worker processes.",
+            len(layouts), len(payloads), exc_info=True,
+        )
         return _optimize_layout_chunk((config, layouts, method, max_iterations))
 
 
